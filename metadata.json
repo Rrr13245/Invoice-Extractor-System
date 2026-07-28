@@ -1,0 +1,6 @@
+{
+  "name": "Invoice Extractor to Excel",
+  "description": "An accounts payable assistant app that extracts invoice details from PDF, JPEG, and PNG formats using Gemini AI and organizes them into structured Excel spreadsheets with categorized columns.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
