@@ -151,14 +151,23 @@ export function analyzeDuplicates(invoices: InvoiceData[]): Record<string, Dupli
     };
   });
 
-  // Pair-wise check to see if an invoice is a duplicate of a PREVIOUS invoice in the array
+  // Helper to check if a filename matches its invoice number
+  const fileNameMatchesInvoiceNumber = (inv: InvoiceData): boolean => {
+    if (!inv.fileName || !inv.invoiceNumber) return false;
+    const fnClean = inv.fileName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const numClean = inv.invoiceNumber.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return fnClean.length > 0 && numClean.length > 0 && fnClean.includes(numClean);
+  };
+
+  // Group invoices and compare pairs
   for (let i = 0; i < invoices.length; i++) {
     const invA = invoices[i];
+    if (results[invA.id]?.isDuplicate) continue; // Already marked as duplicate
     
-    // Check if invA is a duplicate of any previous invoice invB (where j < i)
-    for (let j = 0; j < i; j++) {
+    for (let j = i + 1; j < invoices.length; j++) {
       const invB = invoices[j];
-      
+      if (results[invB.id]?.isDuplicate) continue;
+
       let isDup = false;
       let reason: 'Invoice Number and Supplier' | 'Filename' | undefined = undefined;
 
@@ -186,21 +195,34 @@ export function analyzeDuplicates(invoices: InvoiceData[]): Record<string, Dupli
       }
 
       if (isDup) {
-        // Find the primary of invB (it might itself be a duplicate, so resolve to its primary)
-        let primaryId = invB.id;
-        const bMeta = results[invB.id];
-        if (bMeta && bMeta.isDuplicate && bMeta.primaryId) {
-          primaryId = bMeta.primaryId;
-        }
+        // Determine which one is the true primary record
+        // If invB's filename matches its invoice number better than invA's filename, promote invB as primary
+        const aMatches = fileNameMatchesInvoiceNumber(invA);
+        const bMatches = fileNameMatchesInvoiceNumber(invB);
 
-        results[invA.id] = {
-          id: invA.id,
-          isDuplicate: true,
-          isPrimary: false,
-          primaryId,
-          reason,
-        };
-        break; // Found the earliest duplicate, move to next invoice
+        if (!aMatches && bMatches) {
+          results[invA.id] = {
+            id: invA.id,
+            isDuplicate: true,
+            isPrimary: false,
+            primaryId: invB.id,
+            reason
+          };
+          results[invB.id] = {
+            id: invB.id,
+            isDuplicate: false,
+            isPrimary: true
+          };
+          break; // invA is now marked as duplicate, break to outer loop
+        } else {
+          results[invB.id] = {
+            id: invB.id,
+            isDuplicate: true,
+            isPrimary: false,
+            primaryId: invA.id,
+            reason
+          };
+        }
       }
     }
   }

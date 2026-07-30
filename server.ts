@@ -119,13 +119,20 @@ app.post("/api/extract", async (req, res) => {
     };
 
     const promptPart = {
-      text: "You are an expert accounts payable assistant for a hardware company. Analyze the uploaded invoice document and extract all relevant information exactly as structured in the response schema.\n\n" +
-            "CRITICAL INSTRUCTION FOR PAYMENT TERMS & CONDITIONS:\n" +
-            "1. Pay extra special attention to fine print, footers, headers, margin notes, and sections labeled 'Terms & Conditions', 'Terms of Payment', 'Terms of Sale', 'Notes', or 'Remittance Instructions'.\n" +
-            "2. Suppliers very commonly embed payment terms (such as 'Net 30', 'Net 15', 'Net 60', 'Due on Receipt', '2% 10 Net 30', 'Payment due within 30 days', 'COD', or '100% in Advance') and late payment fees/interest (e.g. '1.5% interest per month on overdue balances') inside paragraph text or fine print at the bottom of the page.\n" +
-            "3. You MUST thoroughly parse and extract these into `paymentTerms` and `latePaymentTerms` even if they appear in narrative fine print rather than a top-level labeled form field.\n\n" +
-            "If a field is not found anywhere in the invoice, leave it as an empty string (for strings) or 0 (for numbers). Make sure to extract all line items accurately. Ensure that sums are mathematically consistent. " +
-            "For bankDetails, combine any available bank name, branch, SWIFT/BIC, or payment instructions. For bankAccount, extract the specific account number or IBAN."
+      text: `You are an expert accounts payable assistant for a hardware company. Analyze the uploaded invoice document (Source File Name: "${fileName}") and extract all relevant information exactly as structured in the response schema.
+
+CRITICAL INSTRUCTIONS FOR INVOICE IDENTIFICATION & FILENAME MATCHING:
+1. Examine the document for the printed Invoice Number / Reference Number.
+2. The source file being uploaded is named "${fileName}".
+3. If the document contains an explicit printed invoice number (e.g., "WSIS-2026-205" or "WSIS-2026-207"), extract it accurately.
+4. If the document body is an unedited copy, scan, or template where the invoice number inside the document is ambiguous, blurry, or missing, check if the filename "${fileName}" contains a clear invoice code (e.g., "WSIS-2026-205" or "TBMW-2026-200") and use that as the invoice identifier for this file.
+
+CRITICAL INSTRUCTION FOR PAYMENT TERMS & CONDITIONS:
+1. Pay extra special attention to fine print, footers, headers, margin notes, and sections labeled 'Terms & Conditions', 'Terms of Payment', 'Terms of Sale', 'Notes', or 'Remittance Instructions'.
+2. Suppliers very commonly embed payment terms (such as 'Net 30', 'Net 15', 'Net 60', 'Due on Receipt', '2% 10 Net 30', 'Payment due within 30 days', 'COD', or '100% in Advance') and late payment fees/interest (e.g. '1.5% interest per month on overdue balances') inside paragraph text or fine print at the bottom of the page.
+3. You MUST thoroughly parse and extract these into \`paymentTerms\` and \`latePaymentTerms\` even if they appear in narrative fine print rather than a top-level labeled form field.
+
+If a field is not found anywhere in the invoice, leave it as an empty string (for strings) or 0 (for numbers). Make sure to extract all line items accurately. Ensure that sums are mathematically consistent. For bankDetails, combine any available bank name, branch, SWIFT/BIC, or payment instructions. For bankAccount, extract the specific account number or IBAN.`
     };
 
     const response = await generateContentWithRetry(ai, {
