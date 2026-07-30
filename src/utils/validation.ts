@@ -193,35 +193,88 @@ export function validateInvoiceMath(invoice: InvoiceData): CalculationWarning[] 
   return warnings;
 }
 
-// Historical Verified Invoice Storage Ledger Version 2
+// Historical Verified Invoice Storage Ledger Version 3
+const HISTORICAL_STORAGE_KEY_V3 = 'invoice_duplicate_history_v3';
 const HISTORICAL_STORAGE_KEY_V2 = 'invoice_duplicate_history_v2';
 const HISTORICAL_STORAGE_KEY_V1 = 'ap_verified_invoice_history_v1';
 
-export interface HistoricalInvoiceRecordV2 {
+export interface LineItemSignature {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+}
+
+export interface HistoricalInvoiceRecordV3 {
   id: string;
   normalizedSupplierName: string;
   normalizedInvoiceNumber: string;
   supplierName: string;
   invoiceNumber: string;
+  invoiceDate?: string;
+  purchaseOrder?: string;
+  currency?: string;
+  invoiceSubtotal?: number;
+  totalTax?: number;
+  finalAmountPayable?: number;
+  lineItemSignatures?: LineItemSignature[];
   fileHash?: string;
   verifiedAt: string;
 }
 
-// Backward compatibility alias
-export type HistoricalInvoiceRecord = HistoricalInvoiceRecordV2;
+// Backward compatibility aliases
+export type HistoricalInvoiceRecord = HistoricalInvoiceRecordV3;
+export type HistoricalInvoiceRecordV2 = HistoricalInvoiceRecordV3;
 
-export function getHistoricalVerifiedInvoices(): HistoricalInvoiceRecordV2[] {
+export function getHistoricalVerifiedInvoices(): HistoricalInvoiceRecordV3[] {
   try {
-    const rawV2 = localStorage.getItem(HISTORICAL_STORAGE_KEY_V2);
-    if (rawV2) {
-      return JSON.parse(rawV2);
+    const rawV3 = localStorage.getItem(HISTORICAL_STORAGE_KEY_V3);
+    if (rawV3) {
+      return JSON.parse(rawV3);
     }
 
-    // Safely migrate from V1 IF AND ONLY IF V1 contains valid non-generic supplier & invoice number
+    // Safely migrate from V2 if exists
+    const rawV2 = localStorage.getItem(HISTORICAL_STORAGE_KEY_V2);
+    if (rawV2) {
+      const v2Records = JSON.parse(rawV2);
+      const migrated: HistoricalInvoiceRecordV3[] = [];
+
+      if (Array.isArray(v2Records)) {
+        for (const rec of v2Records) {
+          const normSup = rec.normalizedSupplierName || normalizeSupplierName(rec.supplierName);
+          const normNum = rec.normalizedInvoiceNumber || normalizeInvoiceNumber(rec.invoiceNumber);
+
+          if (normSup && normNum && !isGenericValue(rec.supplierName) && !isGenericValue(rec.invoiceNumber)) {
+            migrated.push({
+              id: rec.id || `hist-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+              normalizedSupplierName: normSup,
+              normalizedInvoiceNumber: normNum,
+              supplierName: rec.supplierName,
+              invoiceNumber: rec.invoiceNumber,
+              invoiceDate: rec.invoiceDate || '',
+              purchaseOrder: rec.purchaseOrder || '',
+              currency: rec.currency || '',
+              invoiceSubtotal: typeof rec.invoiceSubtotal === 'number' ? rec.invoiceSubtotal : 0,
+              totalTax: typeof rec.totalTax === 'number' ? rec.totalTax : 0,
+              finalAmountPayable: typeof rec.finalAmountPayable === 'number' ? rec.finalAmountPayable : 0,
+              lineItemSignatures: Array.isArray(rec.lineItemSignatures) ? rec.lineItemSignatures : [],
+              fileHash: rec.fileHash,
+              verifiedAt: rec.verifiedAt || new Date().toISOString()
+            });
+          }
+        }
+      }
+
+      localStorage.setItem(HISTORICAL_STORAGE_KEY_V3, JSON.stringify(migrated));
+      localStorage.removeItem(HISTORICAL_STORAGE_KEY_V2);
+      return migrated;
+    }
+
+    // Safely migrate from V1 if exists
     const rawV1 = localStorage.getItem(HISTORICAL_STORAGE_KEY_V1);
     if (rawV1) {
       const v1Records = JSON.parse(rawV1);
-      const migrated: HistoricalInvoiceRecordV2[] = [];
+      const migrated: HistoricalInvoiceRecordV3[] = [];
 
       if (Array.isArray(v1Records)) {
         for (const rec of v1Records) {
@@ -235,6 +288,13 @@ export function getHistoricalVerifiedInvoices(): HistoricalInvoiceRecordV2[] {
               normalizedInvoiceNumber: normNum,
               supplierName: rec.supplierName,
               invoiceNumber: rec.invoiceNumber,
+              invoiceDate: rec.invoiceDate || '',
+              purchaseOrder: rec.purchaseOrder || '',
+              currency: rec.currency || '',
+              invoiceSubtotal: typeof rec.invoiceSubtotal === 'number' ? rec.invoiceSubtotal : 0,
+              totalTax: typeof rec.totalTax === 'number' ? rec.totalTax : 0,
+              finalAmountPayable: typeof rec.finalAmountPayable === 'number' ? rec.finalAmountPayable : 0,
+              lineItemSignatures: [],
               fileHash: rec.fileHash || rec.fileFingerprint,
               verifiedAt: rec.verifiedAt || new Date().toISOString()
             });
@@ -242,7 +302,7 @@ export function getHistoricalVerifiedInvoices(): HistoricalInvoiceRecordV2[] {
         }
       }
 
-      localStorage.setItem(HISTORICAL_STORAGE_KEY_V2, JSON.stringify(migrated));
+      localStorage.setItem(HISTORICAL_STORAGE_KEY_V3, JSON.stringify(migrated));
       localStorage.removeItem(HISTORICAL_STORAGE_KEY_V1);
       return migrated;
     }
@@ -273,12 +333,26 @@ export function saveVerifiedInvoiceToHistory(invoice: InvoiceData): void {
       h.normalizedInvoiceNumber === normNum
     );
 
-    const record: HistoricalInvoiceRecordV2 = {
+    const lineItemSignatures: LineItemSignature[] = (invoice.lineItems || []).map(item => ({
+      description: (item.description || '').trim(),
+      quantity: Number(item.quantity) || 0,
+      unitPrice: Number(item.unitPrice) || 0,
+      totalAmount: Number(item.totalAmount) || 0
+    }));
+
+    const record: HistoricalInvoiceRecordV3 = {
       id: invoice.id,
       normalizedSupplierName: normSup,
       normalizedInvoiceNumber: normNum,
       supplierName: invoice.supplierName,
       invoiceNumber: invoice.invoiceNumber,
+      invoiceDate: invoice.invoiceDate || '',
+      purchaseOrder: invoice.purchaseOrder || '',
+      currency: invoice.currency || '',
+      invoiceSubtotal: typeof invoice.invoiceSubtotal === 'number' ? invoice.invoiceSubtotal : 0,
+      totalTax: typeof invoice.totalTax === 'number' ? invoice.totalTax : 0,
+      finalAmountPayable: typeof invoice.finalAmountPayable === 'number' ? invoice.finalAmountPayable : 0,
+      lineItemSignatures,
       fileHash: invoice.fileHash,
       verifiedAt: new Date().toISOString()
     };
@@ -289,7 +363,7 @@ export function saveVerifiedInvoiceToHistory(invoice: InvoiceData): void {
       history.push(record);
     }
 
-    localStorage.setItem(HISTORICAL_STORAGE_KEY_V2, JSON.stringify(history));
+    localStorage.setItem(HISTORICAL_STORAGE_KEY_V3, JSON.stringify(history));
   } catch (e) {
     console.error('Failed to save invoice to historical ledger:', e);
   }
@@ -297,10 +371,21 @@ export function saveVerifiedInvoiceToHistory(invoice: InvoiceData): void {
 
 export function clearHistoricalVerifiedInvoices(): void {
   try {
+    localStorage.removeItem(HISTORICAL_STORAGE_KEY_V3);
     localStorage.removeItem(HISTORICAL_STORAGE_KEY_V2);
     localStorage.removeItem(HISTORICAL_STORAGE_KEY_V1);
   } catch (e) {
     console.error('Failed to clear historical ledger:', e);
+  }
+}
+
+export function removeHistoricalVerifiedInvoice(id: string): void {
+  try {
+    const history = getHistoricalVerifiedInvoices();
+    const updated = history.filter(item => item.id !== id);
+    localStorage.setItem(HISTORICAL_STORAGE_KEY_V3, JSON.stringify(updated));
+  } catch (e) {
+    console.error('Failed to remove individual historical record:', e);
   }
 }
 
@@ -356,22 +441,259 @@ export function normalizeSupplierName(sup: string | undefined | null): string {
     .trim();
 }
 
+export function normalizeDateToYMD(dateStr?: string | null): string | null {
+  if (!dateStr || dateStr.trim() === '') return null;
+  const clean = dateStr.trim();
+
+  const matchYMD = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (matchYMD) {
+    return `${matchYMD[1]}-${matchYMD[2].padStart(2, '0')}-${matchYMD[3].padStart(2, '0')}`;
+  }
+
+  const matchDMY = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (matchDMY) {
+    return `${matchDMY[3]}-${matchDMY[2].padStart(2, '0')}-${matchDMY[1].padStart(2, '0')}`;
+  }
+
+  const parsed = new Date(clean);
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return null;
+}
+
+export function compareLineItems(itemsA?: any[], itemsB?: any[]): number {
+  if (!itemsA || !itemsB || itemsA.length === 0 || itemsB.length === 0) {
+    return 0;
+  }
+
+  const normA = itemsA.map(item => ({
+    desc: (item.description || '').toLowerCase().replace(/[.,'"`()-]/g, ' ').replace(/\s+/g, ' ').trim(),
+    qty: Number(item.quantity) || 0,
+    price: Number(item.unitPrice) || 0,
+    total: Number(item.totalAmount) || 0,
+  }));
+
+  const normB = itemsB.map(item => ({
+    desc: (item.description || '').toLowerCase().replace(/[.,'"`()-]/g, ' ').replace(/\s+/g, ' ').trim(),
+    qty: Number(item.quantity) || 0,
+    price: Number(item.unitPrice) || 0,
+    total: Number(item.totalAmount) || 0,
+  }));
+
+  const maxLen = Math.max(normA.length, normB.length);
+  if (maxLen === 0) return 0;
+
+  const usedB = new Set<number>();
+  let totalMatchScore = 0;
+
+  for (const a of normA) {
+    let bestMatchIdx = -1;
+    let bestScore = -1;
+
+    for (let j = 0; j < normB.length; j++) {
+      if (usedB.has(j)) continue;
+      const b = normB[j];
+
+      let descScore = 0;
+      if (a.desc && b.desc && a.desc === b.desc) {
+        descScore = 1.0;
+      } else if (a.desc && b.desc) {
+        const tokensA = new Set(a.desc.split(' ').filter(t => t.length > 2));
+        const tokensB = new Set(b.desc.split(' ').filter(t => t.length > 2));
+        if (tokensA.size > 0 && tokensB.size > 0) {
+          let intersection = 0;
+          tokensA.forEach(t => { if (tokensB.has(t)) intersection++; });
+          const union = new Set([...tokensA, ...tokensB]).size;
+          descScore = intersection / union;
+        }
+      }
+
+      const qtyMatch = Math.abs(a.qty - b.qty) <= 0.01 ? 1 : 0;
+      const priceMatch = Math.abs(a.price - b.price) <= 0.02 ? 1 : 0;
+      const totalMatch = Math.abs(a.total - b.total) <= 0.02 ? 1 : 0;
+
+      const itemScore = (descScore * 0.4) + (qtyMatch * 0.2) + (priceMatch * 0.2) + (totalMatch * 0.2);
+
+      if (itemScore > bestScore) {
+        bestScore = itemScore;
+        bestMatchIdx = j;
+      }
+    }
+
+    if (bestMatchIdx >= 0 && bestScore > 0.3) {
+      usedB.add(bestMatchIdx);
+      totalMatchScore += bestScore;
+    }
+  }
+
+  const score = Math.round((totalMatchScore / maxLen) * 10);
+  return Math.min(10, Math.max(0, score));
+}
+
+export interface SimilarityScoreBreakdown {
+  score: number; // 0-100
+  invoiceNumberPoints: number; // 0 or 30
+  supplierNamePoints: number; // 0 or 15
+  invoiceDatePoints: number; // 0 or 10
+  poNumberPoints: number; // 0 or 10
+  currencyPoints: number; // 0 or 5
+  subtotalPoints: number; // 0 or 5
+  taxPoints: number; // 0 or 5
+  finalAmountPoints: number; // 0 or 10
+  lineItemsPoints: number; // 0 to 10
+}
+
+export function computeInvoiceSimilarity(invA: any, invB: any): SimilarityScoreBreakdown {
+  // 1. Complete invoice number (30 pts)
+  const normNumA = normalizeInvoiceNumber(invA.invoiceNumber);
+  const normNumB = normalizeInvoiceNumber(invB.invoiceNumber);
+  const isNumAValid = normNumA !== '' && !isGenericValue(invA.invoiceNumber);
+  const isNumBValid = normNumB !== '' && !isGenericValue(invB.invoiceNumber);
+
+  let invoiceNumberPoints = 0;
+  if (isNumAValid && isNumBValid && normNumA === normNumB) {
+    invoiceNumberPoints = 30;
+  }
+
+  // 2. Supplier name (15 pts)
+  const normSupA = normalizeSupplierName(invA.supplierName);
+  const normSupB = normalizeSupplierName(invB.supplierName);
+  const isSupAValid = normSupA !== '' && !isGenericValue(invA.supplierName);
+  const isSupBValid = normSupB !== '' && !isGenericValue(invB.supplierName);
+
+  let supplierNamePoints = 0;
+  if (isSupAValid && isSupBValid && normSupA === normSupB) {
+    supplierNamePoints = 15;
+  }
+
+  // 3. Invoice date (10 pts)
+  const dateA = normalizeDateToYMD(invA.invoiceDate);
+  const dateB = normalizeDateToYMD(invB.invoiceDate);
+
+  let invoiceDatePoints = 0;
+  if (dateA && dateB && dateA === dateB) {
+    invoiceDatePoints = 10;
+  }
+
+  // 4. Purchase order number (10 pts)
+  const poA = invA.purchaseOrder || invA.poNumber;
+  const poB = invB.purchaseOrder || invB.poNumber;
+  const normPoA = normalizeInvoiceNumber(poA);
+  const normPoB = normalizeInvoiceNumber(poB);
+  const isPoAValid = normPoA !== '' && !isGenericValue(poA);
+  const isPoBValid = normPoB !== '' && !isGenericValue(poB);
+
+  let poNumberPoints = 0;
+  if (isPoAValid && isPoBValid && normPoA === normPoB) {
+    poNumberPoints = 10;
+  }
+
+  // 5. Currency (5 pts)
+  const currA = (invA.currency || '').trim().toUpperCase();
+  const currB = (invB.currency || '').trim().toUpperCase();
+
+  let currencyPoints = 0;
+  if (currA !== '' && currB !== '' && currA === currB && !isGenericValue(currA)) {
+    currencyPoints = 5;
+  }
+
+  // 6. Subtotal (5 pts)
+  const subA = typeof invA.invoiceSubtotal === 'number' ? invA.invoiceSubtotal : (parseFloat(invA.invoiceSubtotal) || 0);
+  const subB = typeof invB.invoiceSubtotal === 'number' ? invB.invoiceSubtotal : (parseFloat(invB.invoiceSubtotal) || 0);
+  const hasSubA = Boolean(invA.invoiceSubtotal !== undefined && invA.invoiceSubtotal !== null && invA.invoiceSubtotal !== '');
+  const hasSubB = Boolean(invB.invoiceSubtotal !== undefined && invB.invoiceSubtotal !== null && invB.invoiceSubtotal !== '');
+
+  let subtotalPoints = 0;
+  if (hasSubA && hasSubB && subA > 0 && subB > 0 && Math.abs(subA - subB) <= 0.02) {
+    subtotalPoints = 5;
+  }
+
+  // 7. Total Tax (5 pts)
+  const taxA = typeof invA.totalTax === 'number' ? invA.totalTax : (parseFloat(invA.totalTax) || 0);
+  const taxB = typeof invB.totalTax === 'number' ? invB.totalTax : (parseFloat(invB.totalTax) || 0);
+  const hasTaxA = Boolean(invA.totalTax !== undefined && invA.totalTax !== null && invA.totalTax !== '');
+  const hasTaxB = Boolean(invB.totalTax !== undefined && invB.totalTax !== null && invB.totalTax !== '');
+
+  let taxPoints = 0;
+  if (hasTaxA && hasTaxB && Math.abs(taxA - taxB) <= 0.02) {
+    taxPoints = 5;
+  }
+
+  // 8. Final Amount Payable (10 pts)
+  const finalA = typeof invA.finalAmountPayable === 'number' ? invA.finalAmountPayable : (parseFloat(invA.finalAmountPayable) || 0);
+  const finalB = typeof invB.finalAmountPayable === 'number' ? invB.finalAmountPayable : (parseFloat(invB.finalAmountPayable) || 0);
+  const hasFinalA = Boolean(invA.finalAmountPayable !== undefined && invA.finalAmountPayable !== null && invA.finalAmountPayable !== '');
+  const hasFinalB = Boolean(invB.finalAmountPayable !== undefined && invB.finalAmountPayable !== null && invB.finalAmountPayable !== '');
+
+  let finalAmountPoints = 0;
+  if (hasFinalA && hasFinalB && finalA > 0 && finalB > 0 && Math.abs(finalA - finalB) <= 0.02) {
+    finalAmountPoints = 10;
+  }
+
+  // 9. Line Items (10 pts)
+  const lineItemsA = invA.lineItems || invA.lineItemSignatures || [];
+  const lineItemsB = invB.lineItems || invB.lineItemSignatures || [];
+
+  let lineItemsPoints = compareLineItems(lineItemsA, lineItemsB);
+
+  const score = invoiceNumberPoints + supplierNamePoints + invoiceDatePoints +
+    poNumberPoints + currencyPoints + subtotalPoints + taxPoints +
+    finalAmountPoints + lineItemsPoints;
+
+  return {
+    score: Math.min(100, Math.max(0, score)),
+    invoiceNumberPoints,
+    supplierNamePoints,
+    invoiceDatePoints,
+    poNumberPoints,
+    currencyPoints,
+    subtotalPoints,
+    taxPoints,
+    finalAmountPoints,
+    lineItemsPoints
+  };
+}
+
 export interface DuplicateDetails {
   id: string;
   isDuplicate: boolean;
+  isConfirmedDuplicate: boolean;
+  isPossibleDuplicate: boolean;
+  similarityScore?: number;
+  similarityBreakdown?: SimilarityScoreBreakdown;
   isPrimary: boolean;
   primaryId?: string;
   matchType?: 'current_batch' | 'historical';
   reason?: string;
+  historicalMatch?: HistoricalInvoiceRecordV3;
+  batchMatch?: InvoiceData;
+  possibleMatchRecord?: {
+    supplierName: string;
+    invoiceNumber: string;
+    invoiceDate?: string;
+    purchaseOrder?: string;
+    finalAmountPayable?: number;
+    verifiedAt?: string;
+  };
+  reviewDecision?: 'confirmed_duplicate' | 'separate_invoice' | 'pending';
+  reviewerName?: string;
+  reviewReason?: string;
 }
 
 /**
- * Duplicate analysis comparing batch items and historical verified ledger.
- * Strictly enforces Rule 1 (Exact supplier & invoice number) and Rule 2 (Exact SHA-256 file content hash).
+ * Duplicate analysis supporting:
+ * 1. Confirmed Duplicate (Exact file hash or exact normalized supplier & invoice number)
+ * 2. Possible Duplicate – 90%+ Similar (Weighted 100-pt whole-invoice scoring)
+ * 3. Separate Invoice (< 90% score)
  */
 export function analyzeDuplicates(
   invoices: InvoiceData[],
-  historicalRecords: HistoricalInvoiceRecordV2[] = []
+  historicalRecords: HistoricalInvoiceRecordV3[] = []
 ): Record<string, DuplicateDetails> {
   const results: Record<string, DuplicateDetails> = {};
 
@@ -379,11 +701,31 @@ export function analyzeDuplicates(
     results[inv.id] = {
       id: inv.id,
       isDuplicate: false,
+      isConfirmedDuplicate: false,
+      isPossibleDuplicate: false,
       isPrimary: true,
     };
   });
 
-  // 1. Check against Historical Ledger
+  const isDecisionValid = (inv: InvoiceData): boolean => {
+    if (!inv.duplicateReviewDecision || inv.duplicateReviewDecision.choice !== 'separate_invoice') {
+      return false;
+    }
+    const snap = inv.duplicateReviewDecision.snapshot;
+    if (!snap) return true;
+
+    return (
+      snap.supplierName === inv.supplierName &&
+      snap.invoiceNumber === inv.invoiceNumber &&
+      snap.invoiceDate === inv.invoiceDate &&
+      snap.purchaseOrder === inv.purchaseOrder &&
+      snap.currency === inv.currency &&
+      snap.invoiceSubtotal === inv.invoiceSubtotal &&
+      snap.totalTax === inv.totalTax &&
+      snap.finalAmountPayable === inv.finalAmountPayable
+    );
+  };
+
   for (const inv of invoices) {
     if (inv.isDuplicateDismissed) continue;
     if (inv.status !== 'success') continue;
@@ -394,103 +736,167 @@ export function analyzeDuplicates(
     const isSupInvValid = normSupInv !== '' && !isGenericValue(inv.supplierName);
     const hasHashInv = Boolean(inv.fileHash && inv.fileHash.trim() !== '');
 
+    // 1. Check Confirmed Duplicate vs Historical Ledger
+    let confirmedHistMatch: HistoricalInvoiceRecordV3 | null = null;
+    let confirmedHistReason = '';
+
     for (const hist of historicalRecords) {
       if (hist.id === inv.id) continue;
 
-      const normNumHist = hist.normalizedSupplierName ? hist.normalizedInvoiceNumber : normalizeInvoiceNumber(hist.invoiceNumber);
+      const normNumHist = hist.normalizedInvoiceNumber || normalizeInvoiceNumber(hist.invoiceNumber);
       const normSupHist = hist.normalizedSupplierName || normalizeSupplierName(hist.supplierName);
       const isHistNumValid = normNumHist !== '' && !isGenericValue(hist.invoiceNumber);
       const isHistSupValid = normSupHist !== '' && !isGenericValue(hist.supplierName);
       const hasHashHist = Boolean(hist.fileHash && hist.fileHash.trim() !== '');
 
-      let isHistDup = false;
-      let histReason = '';
-
-      // Rule 1: Exact supplier AND exact invoice number match
       if (
         isInvNumValid && isHistNumValid && isSupInvValid && isHistSupValid &&
         normNumInv === normNumHist && normSupInv === normSupHist
       ) {
-        isHistDup = true;
-        histReason = `Exact supplier and invoice-number match with a previously verified invoice.`;
-      }
-      // Rule 2: Exact file content SHA-256 hash match
-      else if (
-        hasHashInv && hasHashHist &&
-        inv.fileHash === hist.fileHash
-      ) {
-        isHistDup = true;
-        histReason = `The exact same file content was uploaded more than once.`;
-      }
-
-      if (isHistDup) {
-        results[inv.id] = {
-          id: inv.id,
-          isDuplicate: true,
-          isPrimary: false,
-          matchType: 'historical',
-          reason: histReason
-        };
+        confirmedHistMatch = hist;
+        confirmedHistReason = `Exact supplier and invoice-number match with previously verified invoice #${hist.invoiceNumber} (${hist.supplierName}).`;
+        break;
+      } else if (hasHashInv && hasHashHist && inv.fileHash === hist.fileHash) {
+        confirmedHistMatch = hist;
+        confirmedHistReason = `Exact SHA-256 file content match with previously verified document #${hist.invoiceNumber || hist.id}.`;
         break;
       }
     }
-  }
 
-  // 2. Check within Current Batch
-  for (let i = 0; i < invoices.length; i++) {
-    const invA = invoices[i];
-    if (invA.isDuplicateDismissed) continue;
-    if (invA.status !== 'success') continue;
-    if (results[invA.id]?.isDuplicate) continue;
+    if (confirmedHistMatch) {
+      results[inv.id] = {
+        id: inv.id,
+        isDuplicate: true,
+        isConfirmedDuplicate: true,
+        isPossibleDuplicate: false,
+        isPrimary: false,
+        matchType: 'historical',
+        reason: confirmedHistReason,
+        historicalMatch: confirmedHistMatch
+      };
+      continue;
+    }
 
-    const normNumA = normalizeInvoiceNumber(invA.invoiceNumber);
-    const normSupA = normalizeSupplierName(invA.supplierName);
-    const isNumAValid = normNumA !== '' && !isGenericValue(invA.invoiceNumber);
-    const isSupAValid = normSupA !== '' && !isGenericValue(invA.supplierName);
-    const hasHashA = Boolean(invA.fileHash && invA.fileHash.trim() !== '');
+    // 2. Check Confirmed Duplicate vs Current Batch
+    let confirmedBatchMatch: InvoiceData | null = null;
+    let confirmedBatchReason = '';
 
-    for (let j = i + 1; j < invoices.length; j++) {
-      const invB = invoices[j];
-      if (invB.isDuplicateDismissed) continue;
-      if (invB.status !== 'success') continue;
-      if (results[invB.id]?.isDuplicate) continue;
+    for (const otherInv of invoices) {
+      if (otherInv.id === inv.id) continue;
+      if (otherInv.status !== 'success') continue;
 
-      const normNumB = normalizeInvoiceNumber(invB.invoiceNumber);
-      const normSupB = normalizeSupplierName(invB.supplierName);
-      const isNumBValid = normNumB !== '' && !isGenericValue(invB.invoiceNumber);
-      const isSupBValid = normSupB !== '' && !isGenericValue(invB.supplierName);
-      const hasHashB = Boolean(invB.fileHash && invB.fileHash.trim() !== '');
+      const normNumOther = normalizeInvoiceNumber(otherInv.invoiceNumber);
+      const normSupOther = normalizeSupplierName(otherInv.supplierName);
+      const isNumOtherValid = normNumOther !== '' && !isGenericValue(otherInv.invoiceNumber);
+      const isSupOtherValid = normSupOther !== '' && !isGenericValue(otherInv.supplierName);
+      const hasHashOther = Boolean(otherInv.fileHash && otherInv.fileHash.trim() !== '');
 
-      let isBatchDup = false;
-      let batchReason = '';
-
-      // Rule 1: Exact supplier AND exact invoice number match
       if (
-        isNumAValid && isNumBValid && isSupAValid && isSupBValid &&
-        normNumA === normNumB && normSupA === normSupB
+        isInvNumValid && isNumOtherValid && isSupInvValid && isSupOtherValid &&
+        normNumInv === normNumOther && normSupInv === normSupOther
       ) {
-        isBatchDup = true;
-        batchReason = `Exact supplier and invoice-number match in the current batch.`;
+        confirmedBatchMatch = otherInv;
+        confirmedBatchReason = `Exact supplier and invoice-number match with #${otherInv.invoiceNumber} in the current batch.`;
+        break;
+      } else if (hasHashInv && hasHashOther && inv.fileHash === otherInv.fileHash) {
+        confirmedBatchMatch = otherInv;
+        confirmedBatchReason = `Exact SHA-256 file content match with #${otherInv.invoiceNumber || otherInv.fileName} in the current batch.`;
+        break;
       }
-      // Rule 2: Exact file content SHA-256 hash match
-      else if (
-        hasHashA && hasHashB &&
-        invA.fileHash === invB.fileHash
-      ) {
-        isBatchDup = true;
-        batchReason = `The exact same file content was uploaded more than once.`;
-      }
+    }
 
-      if (isBatchDup) {
-        results[invB.id] = {
-          id: invB.id,
-          isDuplicate: true,
-          isPrimary: false,
-          primaryId: invA.id,
-          matchType: 'current_batch',
-          reason: batchReason
-        };
+    if (confirmedBatchMatch) {
+      results[inv.id] = {
+        id: inv.id,
+        isDuplicate: true,
+        isConfirmedDuplicate: true,
+        isPossibleDuplicate: false,
+        isPrimary: false,
+        primaryId: confirmedBatchMatch.id,
+        matchType: 'current_batch',
+        reason: confirmedBatchReason,
+        batchMatch: confirmedBatchMatch
+      };
+      continue;
+    }
+
+    // 3. Calculate Weighted Similarity Score (0-100) for Possible Duplicate Detection
+    let maxScore = 0;
+    let maxBreakdown: SimilarityScoreBreakdown | undefined;
+    let maxHistMatch: HistoricalInvoiceRecordV3 | undefined;
+    let maxBatchMatch: InvoiceData | undefined;
+    let maxMatchType: 'historical' | 'current_batch' = 'current_batch';
+
+    for (const hist of historicalRecords) {
+      if (hist.id === inv.id) continue;
+      const breakdown = computeInvoiceSimilarity(inv, hist);
+      if (breakdown.score > maxScore) {
+        maxScore = breakdown.score;
+        maxBreakdown = breakdown;
+        maxHistMatch = hist;
+        maxMatchType = 'historical';
       }
+    }
+
+    for (const otherInv of invoices) {
+      if (otherInv.id === inv.id) continue;
+      if (otherInv.status !== 'success') continue;
+
+      const breakdown = computeInvoiceSimilarity(inv, otherInv);
+      if (breakdown.score > maxScore) {
+        maxScore = breakdown.score;
+        maxBreakdown = breakdown;
+        maxBatchMatch = otherInv;
+        maxMatchType = 'current_batch';
+      }
+    }
+
+    if (maxScore >= 90) {
+      const decisionOverridden = isDecisionValid(inv);
+      const targetSupplier = maxMatchType === 'historical' ? maxHistMatch?.supplierName : maxBatchMatch?.supplierName;
+      const targetNum = maxMatchType === 'historical' ? maxHistMatch?.invoiceNumber : maxBatchMatch?.invoiceNumber;
+
+      results[inv.id] = {
+        id: inv.id,
+        isDuplicate: !decisionOverridden,
+        isConfirmedDuplicate: false,
+        isPossibleDuplicate: true,
+        similarityScore: maxScore,
+        similarityBreakdown: maxBreakdown,
+        isPrimary: false,
+        primaryId: maxBatchMatch?.id,
+        matchType: maxMatchType,
+        reason: `Possible Duplicate – ${maxScore}% Similar to ${targetSupplier || 'invoice'} #${targetNum || ''}`,
+        historicalMatch: maxHistMatch,
+        batchMatch: maxBatchMatch,
+        possibleMatchRecord: maxMatchType === 'historical' ? {
+          supplierName: maxHistMatch?.supplierName || '',
+          invoiceNumber: maxHistMatch?.invoiceNumber || '',
+          invoiceDate: maxHistMatch?.invoiceDate,
+          purchaseOrder: maxHistMatch?.purchaseOrder,
+          finalAmountPayable: maxHistMatch?.finalAmountPayable,
+          verifiedAt: maxHistMatch?.verifiedAt
+        } : {
+          supplierName: maxBatchMatch?.supplierName || '',
+          invoiceNumber: maxBatchMatch?.invoiceNumber || '',
+          invoiceDate: maxBatchMatch?.invoiceDate,
+          purchaseOrder: maxBatchMatch?.purchaseOrder,
+          finalAmountPayable: maxBatchMatch?.finalAmountPayable,
+        },
+        reviewDecision: inv.duplicateReviewDecision?.choice || 'pending',
+        reviewerName: inv.duplicateReviewDecision?.reviewerName,
+        reviewReason: inv.duplicateReviewDecision?.reviewReason
+      };
+    } else {
+      results[inv.id] = {
+        id: inv.id,
+        isDuplicate: false,
+        isConfirmedDuplicate: false,
+        isPossibleDuplicate: false,
+        similarityScore: maxScore,
+        similarityBreakdown: maxBreakdown,
+        isPrimary: true
+      };
     }
   }
 

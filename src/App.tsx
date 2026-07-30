@@ -36,7 +36,8 @@ import {
   HelpCircle,
   FileCheck,
   Check,
-  Layers
+  Layers,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { InvoiceData, InvoiceLineItem } from './types';
@@ -49,6 +50,7 @@ import {
   saveVerifiedInvoiceToHistory, 
   getHistoricalVerifiedInvoices, 
   clearHistoricalVerifiedInvoices,
+  removeHistoricalVerifiedInvoice,
   HistoricalInvoiceRecordV2,
   getInvoiceValidationSummary,
   getInvoiceReviewReasons,
@@ -217,7 +219,8 @@ export default function App() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [activeTab, setActiveTab] = useState<'preview' | 'supplier' | 'metadata' | 'banking' | 'totals'>('preview');
+  const [activeTab, setActiveTab] = useState<'preview' | 'supplier' | 'metadata' | 'banking' | 'totals' | 'history'>('preview');
+  const [historySearchTerm, setHistorySearchTerm] = useState<string>('');
   const [viewLayout, setViewLayout] = useState<'tabbed' | 'split'>('tabbed');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -917,6 +920,177 @@ export default function App() {
     setShowClearHistoryConfirmModal(false);
   };
 
+  // Remove individual record from historical ledger
+  const handleRemoveIndividualHistory = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    removeHistoricalVerifiedInvoice(id);
+    setHistoricalRecords(getHistoricalVerifiedInvoices());
+  };
+
+  // Render the Verified Ledger history tab inside the workspace review area
+  const renderHistoryTabContent = () => {
+    const filteredRecords = historicalRecords.filter(rec => {
+      if (!historySearchTerm.trim()) return true;
+      const term = historySearchTerm.toLowerCase().trim();
+      return (
+        (rec.supplierName || '').toLowerCase().includes(term) ||
+        (rec.invoiceNumber || '').toLowerCase().includes(term) ||
+        (rec.purchaseOrder || '').toLowerCase().includes(term) ||
+        (rec.currency || '').toLowerCase().includes(term)
+      );
+    });
+
+    const totalValue = historicalRecords.reduce((acc, curr) => acc + (curr.finalAmountPayable || 0), 0);
+
+    return (
+      <div className="space-y-5">
+        {/* Ledger Banner */}
+        <div className="bg-slate-900 text-white p-4 sm:p-5 rounded-xl space-y-3 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="bg-indigo-500/20 text-indigo-300 p-2.5 rounded-lg border border-indigo-500/30">
+                <History className="w-5 h-5 text-indigo-400" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-white flex items-center gap-2">
+                  <span>Previously Verified Invoices Ledger</span>
+                  <span className="bg-indigo-500/30 text-indigo-200 text-xs px-2 py-0.5 rounded-full font-mono font-bold">
+                    {historicalRecords.length} Records
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Historical ledger of all previously verified invoices. Duplicate detection automatically cross-checks incoming documents against these records.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={handleClearHistory}
+                disabled={historicalRecords.length === 0}
+                className="px-3.5 py-2 bg-rose-600/90 hover:bg-rose-600 text-white font-bold text-xs rounded-lg transition shadow-2xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Remove all historical verified invoices"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear All Ledger Records ({historicalRecords.length})</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Ledger Stats Bar */}
+          <div className="pt-2.5 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+            <div>
+              <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Total Verified</span>
+              <span className="font-mono font-bold text-slate-100 text-sm">{historicalRecords.length} invoices</span>
+            </div>
+            <div>
+              <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Total Ledger Value</span>
+              <span className="font-mono font-bold text-emerald-400 text-sm">${totalValue.toFixed(2)}</span>
+            </div>
+            <div className="col-span-2 sm:col-span-1">
+              <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Duplicate Engine</span>
+              <span className="text-emerald-300 font-semibold text-[11px] flex items-center gap-1 mt-0.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                Active historical matching
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Search Filter */}
+        {historicalRecords.length > 0 && (
+          <div className="flex items-center gap-3 bg-gray-50 border border-gray-200 p-2.5 rounded-xl">
+            <Search className="w-4 h-4 text-gray-400 shrink-0 ml-1" />
+            <input
+              type="text"
+              value={historySearchTerm}
+              onChange={(e) => setHistorySearchTerm(e.target.value)}
+              placeholder="Search verified history by supplier, invoice #, PO #, currency..."
+              className="w-full bg-transparent text-xs text-gray-900 placeholder-gray-400 focus:outline-none"
+            />
+            {historySearchTerm && (
+              <button
+                type="button"
+                onClick={() => setHistorySearchTerm('')}
+                className="text-xs text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Table View */}
+        {historicalRecords.length === 0 ? (
+          <div className="p-12 text-center border-2 border-dashed border-gray-200 rounded-xl bg-gray-50/50 space-y-3">
+            <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
+              <History className="w-6 h-6" />
+            </div>
+            <h4 className="font-bold text-gray-800 text-sm">No Previously Verified Invoices</h4>
+            <p className="text-xs text-gray-500 max-w-md mx-auto">
+              When you verify supplier invoices during review, they are saved to this ledger to automatically flag duplicate uploads in future batches.
+            </p>
+          </div>
+        ) : filteredRecords.length === 0 ? (
+          <div className="p-8 text-center border border-gray-200 rounded-xl bg-gray-50 text-gray-500 text-xs">
+            No historical records match "{historySearchTerm}".
+          </div>
+        ) : (
+          <div className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-gray-50/80 text-gray-600 font-bold border-b border-gray-200">
+                  <tr>
+                    <th className="p-3">Verified Timestamp</th>
+                    <th className="p-3">Supplier Name</th>
+                    <th className="p-3">Invoice #</th>
+                    <th className="p-3">Date / PO</th>
+                    <th className="p-3 text-right">Final Amount</th>
+                    <th className="p-3 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredRecords.map(rec => (
+                    <tr key={rec.id} className="hover:bg-gray-50/80 transition">
+                      <td className="p-3 text-gray-500 font-mono text-[11px] whitespace-nowrap">
+                        {new Date(rec.verifiedAt).toLocaleDateString()} {new Date(rec.verifiedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td className="p-3 font-semibold text-gray-900">
+                        {rec.supplierName}
+                      </td>
+                      <td className="p-3 font-mono font-bold text-indigo-900 whitespace-nowrap">
+                        #{rec.invoiceNumber}
+                      </td>
+                      <td className="p-3 text-gray-600 text-[11px] whitespace-nowrap">
+                        <div>{rec.invoiceDate || '—'}</div>
+                        {rec.purchaseOrder && <div className="text-gray-400 font-mono">PO: {rec.purchaseOrder}</div>}
+                      </td>
+                      <td className="p-3 text-right font-mono font-bold text-gray-900 whitespace-nowrap">
+                        {rec.currency || ''} ${(rec.finalAmountPayable || 0).toFixed(2)}
+                      </td>
+                      <td className="p-3 text-center whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => handleRemoveIndividualHistory(rec.id, e)}
+                          className="px-2.5 py-1 text-xs text-rose-600 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-lg transition font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          title="Remove this invoice from historical verified ledger"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // Execute the 12 required duplicate detection test scenarios
   const handleRunUnitTests = () => {
     const res = runAllDuplicateTests();
@@ -931,23 +1105,37 @@ export default function App() {
         {/* DUPLICATE WARNING CARD */}
         {selectedDupDetails?.isDuplicate && (
           <div className="bg-amber-50 border border-amber-300 border-l-4 border-l-amber-500 p-4 rounded-r-xl shadow-xs">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
               <div className="flex gap-3">
                 <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                <div>
-                  <h4 className="font-bold text-amber-900 text-sm flex items-center gap-2">
-                    Duplicate Document Flagged
-                    <span className="text-[10px] bg-amber-200 text-amber-800 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
-                      Matched: {selectedDupDetails.reason}
+                <div className="space-y-1">
+                  <h4 className="font-bold text-amber-900 text-sm flex items-center gap-2 flex-wrap">
+                    <span>Duplicate Document Flagged</span>
+                    <span className="text-[10px] bg-amber-200 text-amber-900 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
+                      {selectedDupDetails.matchType === 'historical' ? 'Previously Processed Invoice' : 'Duplicate in Current Batch'}
                     </span>
                   </h4>
-                  <p className="text-xs text-amber-700 mt-1 leading-relaxed">
-                    {selectedDupDetails.isHistorical ? (
-                      <span>This invoice matches a previously verified record stored in the ledger ({selectedDupDetails.historicalMatch?.supplierName} - {selectedDupDetails.historicalMatch?.invoiceNumber}).</span>
-                    ) : (
-                      <span>This invoice shares an identical filename or invoice number &amp; supplier with another item in this batch.</span>
-                    )}
-                  </p>
+
+                  {selectedDupDetails.matchType === 'historical' ? (
+                    <div className="text-xs text-amber-800 space-y-1 pt-1">
+                      <p className="font-semibold text-amber-900">
+                        {selectedInvoice.invoiceNumber ? `#${selectedInvoice.invoiceNumber}` : 'Invoice'} matches a previously verified {selectedDupDetails.historicalMatch?.supplierName || 'supplier'} invoice stored in the local ledger.
+                      </p>
+                      <div className="bg-white/80 border border-amber-200 rounded-lg p-2.5 text-[11px] font-mono text-amber-900 space-y-0.5">
+                        <p>• Matching Supplier: <strong>{selectedDupDetails.historicalMatch?.supplierName || 'N/A'}</strong></p>
+                        <p>• Matching Invoice #: <strong>{selectedDupDetails.historicalMatch?.invoiceNumber || 'N/A'}</strong></p>
+                        <p>• Ledger Verification Date: <strong>{selectedDupDetails.historicalMatch?.verifiedAt ? new Date(selectedDupDetails.historicalMatch.verifiedAt).toLocaleDateString() : 'Previous Session'}</strong></p>
+                        <p>• Rule: {selectedDupDetails.reason}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-amber-800 space-y-1 pt-1">
+                      <p className="font-semibold text-amber-900">Duplicate in Current Batch</p>
+                      <p className="bg-white/80 border border-amber-200 rounded-lg p-2.5 text-[11px] font-mono text-amber-900">
+                        • {selectedDupDetails.reason || 'Shares duplicate parameters with another document in this batch.'}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1781,7 +1969,11 @@ export default function App() {
           {summary.status === 'duplicate' && (
             <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3 text-amber-600" />
-              Duplicate
+              {dupMeta?.matchType === 'historical'
+                ? 'Historical Duplicate'
+                : (dupMeta?.reason?.toLowerCase().includes('file content') || dupMeta?.reason?.toLowerCase().includes('re-upload') || dupMeta?.reason?.toLowerCase().includes('bytes'))
+                  ? 'Exact File Re-upload'
+                  : 'Batch Duplicate'}
             </span>
           )}
 
@@ -2198,6 +2390,7 @@ export default function App() {
                         { id: 'metadata', label: 'Invoice Details', icon: Calendar },
                         { id: 'banking', label: 'Banking & Terms', icon: CreditCard },
                         { id: 'totals', label: 'Totals', icon: Coins },
+                        { id: 'history', label: `Verified Ledger (${historicalRecords.length})`, icon: History },
                       ].map(tab => {
                         const IconComp = tab.icon;
                         const isActive = activeTab === tab.id;
@@ -2266,6 +2459,8 @@ export default function App() {
                         />
                         {renderFormContent('supplier')}
                       </div>
+                    ) : activeTab === 'history' ? (
+                      renderHistoryTabContent()
                     ) : (
                       renderFormContent(activeTab)
                     )}
@@ -2349,6 +2544,7 @@ export default function App() {
                         <th className="p-3 text-right">Amount</th>
                         <th className="p-3">Currency</th>
                         <th className="p-3">File Name</th>
+                        <th className="p-3 text-center">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -2360,6 +2556,17 @@ export default function App() {
                           <td className="p-3 text-right font-mono font-bold text-gray-900">${rec.finalAmountPayable.toFixed(2)}</td>
                           <td className="p-3 font-mono text-gray-600">{rec.currency}</td>
                           <td className="p-3 text-gray-500 truncate max-w-[150px]">{rec.fileName}</td>
+                          <td className="p-3 text-center">
+                            <button
+                              type="button"
+                              onClick={(e) => handleRemoveIndividualHistory(rec.id, e)}
+                              className="px-2 py-1 text-xs text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded border border-rose-200 font-semibold inline-flex items-center gap-1 cursor-pointer"
+                              title="Remove record"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Remove</span>
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

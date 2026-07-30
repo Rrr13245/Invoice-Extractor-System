@@ -24,6 +24,23 @@ export interface AiReviewNote {
   requiresConfirmation?: boolean;
 }
 
+export interface DuplicateReviewDecision {
+  choice: 'confirmed_duplicate' | 'separate_invoice' | 'pending';
+  reviewerName?: string;
+  reviewReason?: string;
+  reviewedAt?: string;
+  snapshot?: {
+    supplierName: string;
+    invoiceNumber: string;
+    invoiceDate: string;
+    purchaseOrder: string;
+    currency: string;
+    invoiceSubtotal: number;
+    totalTax: number;
+    finalAmountPayable: number;
+  };
+}
+
 export interface InvoiceData {
   id: string; // Internal unique ID
   fileName: string; // Name of the uploaded file
@@ -40,6 +57,7 @@ export interface InvoiceData {
   calcOverrideConfirmed?: boolean;
   calcOverrideReason?: string;
   isDuplicateDismissed?: boolean;
+  duplicateReviewDecision?: DuplicateReviewDecision;
   fileFingerprint?: string;
   fileHash?: string; // Cryptographic SHA-256 hash of uploaded file content
   validationStatus?: InvoiceValidationStatus;
