@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Info,
   ChevronRight,
+  ChevronLeft,
   Sparkles,
   User,
   MapPin,
@@ -28,22 +29,44 @@ import {
   Eye,
   Columns,
   LayoutList,
-  FileSearch
+  FileSearch,
+  CheckSquare,
+  History,
+  X,
+  HelpCircle,
+  FileCheck,
+  Check,
+  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { InvoiceData, InvoiceLineItem } from './types';
 import { exportInvoicesToExcel } from './utils/excel';
-import { getInvoiceMissingFields, analyzeDuplicates } from './utils/validation';
+import { 
+  getInvoiceMissingFields, 
+  analyzeDuplicates, 
+  validateInvoiceMath, 
+  CalculationWarning, 
+  saveVerifiedInvoiceToHistory, 
+  getHistoricalVerifiedInvoices, 
+  clearHistoricalVerifiedInvoices,
+  HistoricalInvoiceRecordV2,
+  getInvoiceValidationSummary,
+  getInvoiceReviewReasons,
+  InvoiceValidationSummary
+} from './utils/validation';
 import { InvoiceDocumentPreview } from './components/InvoiceDocumentPreview';
 import { generateInvoiceDocumentSvg } from './utils/documentSvgGenerator';
+import { calculateFileSha256 } from './utils/fileHash';
+import { runAllDuplicateTests, TestResult } from './utils/duplicateTests';
 
-// Raw demo invoice data templates
+// Raw demo invoice data templates with isVerified: false so human verification is required
 const RAW_DEMO_INVOICES: InvoiceData[] = [
   {
     id: 'demo-1',
     fileName: 'apex_fasteners_inv_2049.pdf',
     fileType: 'application/pdf',
     status: 'success',
+    isVerified: false,
     invoiceNumber: 'INV-2026-2049',
     invoiceDate: '2026-07-10',
     paymentDueDate: '2026-08-09',
@@ -57,7 +80,7 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     bankAccount: 'US89-1020-3040-5060-7080',
     invoiceSubtotal: 1240.00,
     totalDiscount: 50.00,
-    totalTax: 119.00, // 10% tax rate average
+    totalTax: 119.00,
     deliveryCharges: 35.00,
     finalAmountPayable: 1344.00,
     amountAlreadyPaid: 344.00,
@@ -65,6 +88,10 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     paymentTerms: 'Net 30',
     acceptedPaymentMethod: 'Bank Transfer, Credit Card',
     latePaymentTerms: '1.5% monthly interest applied after due date',
+    aiReviewNotes: [
+      { field: 'invoiceNumber', sourceType: 'printed', message: 'Printed invoice number "INV-2026-2049" extracted from document header.' },
+      { field: 'paymentTerms', sourceType: 'printed', message: 'Extracted payment terms "Net 30" from remittance footer.' }
+    ],
     lineItems: [
       { id: 'li-1-1', description: 'Grade 8 Zinc-Plated Hex Cap Screws (3/8" x 2") - Bulk 500ct', quantity: 2, unitPrice: 150.00, discount: 0, taxRate: 10, taxAmount: 30.00, totalAmount: 330.00 },
       { id: 'li-1-2', description: 'Heavy Duty Toggle Bolts (1/4" x 4") - Box of 100', quantity: 5, unitPrice: 42.00, discount: 10.00, taxRate: 10, taxAmount: 20.00, totalAmount: 220.00 },
@@ -77,6 +104,7 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     fileName: 'titan_tools_inv_9983.jpg',
     fileType: 'image/jpeg',
     status: 'success',
+    isVerified: false,
     invoiceNumber: 'TT-9983',
     invoiceDate: '2026-07-12',
     paymentDueDate: '2026-07-27',
@@ -90,7 +118,7 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     bankAccount: '1092-2394-4422-9981',
     invoiceSubtotal: 890.00,
     totalDiscount: 0,
-    totalTax: 62.30, // 7% state tax
+    totalTax: 62.30,
     deliveryCharges: 15.00,
     finalAmountPayable: 967.30,
     amountAlreadyPaid: 967.30,
@@ -98,6 +126,9 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     paymentTerms: 'Due on Receipt',
     acceptedPaymentMethod: 'Bank Transfer, Check, ACH',
     latePaymentTerms: 'Flat $25 fee for payments received over 5 days late',
+    aiReviewNotes: [
+      { field: 'currency', sourceType: 'printed', message: 'Extracted USD currency symbol ($).' }
+    ],
     lineItems: [
       { id: 'li-2-1', description: '18V Brushless Impact Driver Kit with 2.0Ah Battery', quantity: 4, unitPrice: 135.00, discount: 0, taxRate: 7, taxAmount: 37.80, totalAmount: 577.80 },
       { id: 'li-2-2', description: 'Titan Professional 12-Piece Combination Wrench Set', quantity: 5, unitPrice: 70.00, discount: 0, taxRate: 7, taxAmount: 24.50, totalAmount: 374.50 }
@@ -108,10 +139,11 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     fileName: 'timber_supplies_invoice_43.png',
     fileType: 'image/png',
     status: 'success',
+    isVerified: false,
     invoiceNumber: 'TS-4309-X',
     invoiceDate: '2026-07-14',
     paymentDueDate: '2026-08-13',
-    currency: 'USD',
+    currency: 'SGD',
     purchaseOrder: '',
     supplierName: 'Northwest Pine Lumber & Timber',
     supplierAddress: '928 Fir Ridge Road, Portland, OR 97201',
@@ -121,7 +153,7 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     bankAccount: 'OR88-3481-9920-5511',
     invoiceSubtotal: 3150.00,
     totalDiscount: 150.00,
-    totalTax: 0, // No sales tax in OR
+    totalTax: 0,
     deliveryCharges: 250.00,
     finalAmountPayable: 3250.00,
     amountAlreadyPaid: 0,
@@ -129,6 +161,9 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     paymentTerms: 'Net 30',
     acceptedPaymentMethod: 'Bank Wire Transfer',
     latePaymentTerms: '2% monthly compound interest begins after 30-day grace period',
+    aiReviewNotes: [
+      { field: 'currency', sourceType: 'printed', message: 'Printed SGD currency explicitly extracted.' }
+    ],
     lineItems: [
       { id: 'li-3-1', description: 'Premium Douglas Fir 2x4x8 Studs - Bundle of 100', quantity: 3, unitPrice: 450.00, discount: 50.00, taxRate: 0, taxAmount: 0, totalAmount: 1300.00 },
       { id: 'li-3-2', description: 'CDX Structural Pine Sheathing Plywood (15/32" x 4\' x 8\')', quantity: 40, unitPrice: 45.00, discount: 100.00, taxRate: 0, taxAmount: 0, totalAmount: 1700.00 }
@@ -139,9 +174,10 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     fileName: 'industrial_paints_inv_882.pdf',
     fileType: 'application/pdf',
     status: 'success',
+    isVerified: false,
     invoiceNumber: 'IP-8820',
     invoiceDate: '2026-07-15',
-    paymentDueDate: '', // Intentionally missing payment due date to showcase 'Invoices that need attention'
+    paymentDueDate: '', // Intentionally missing payment due date
     currency: 'USD',
     purchaseOrder: 'PO-8812',
     supplierName: 'Midwest Industrial Paints & Coatings',
@@ -160,6 +196,10 @@ const RAW_DEMO_INVOICES: InvoiceData[] = [
     paymentTerms: '', // Intentionally missing payment terms
     acceptedPaymentMethod: 'Check, ACH',
     latePaymentTerms: '',
+    aiReviewNotes: [
+      { field: 'paymentDueDate', sourceType: 'not_found', message: 'Payment due date missing in document text.' },
+      { field: 'paymentTerms', sourceType: 'not_found', message: 'Payment terms not found in document.' }
+    ],
     lineItems: [
       { id: 'li-4-1', description: 'Anti-Rust Primer Grey (5 Gallon Pail)', quantity: 4, unitPrice: 155.00, discount: 0, taxRate: 6, taxAmount: 37.20, totalAmount: 657.20 }
     ]
@@ -181,64 +221,144 @@ export default function App() {
   const [viewLayout, setViewLayout] = useState<'tabbed' | 'split'>('tabbed');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Computed metrics
-  const stats = useMemo(() => {
-    let totalInvoiced = 0;
-    let totalPaid = 0;
-    let totalOutstanding = 0;
-    let successfulCount = 0;
+  // Historical verified ledger state
+  const [historicalRecords, setHistoricalRecords] = useState<HistoricalInvoiceRecordV2[]>(getHistoricalVerifiedInvoices());
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
+  const [showClearHistoryConfirmModal, setShowClearHistoryConfirmModal] = useState(false);
+  const [testModalResults, setTestModalResults] = useState<{ allPassed: boolean; results: TestResult[] } | null>(null);
 
-    invoices.forEach(inv => {
-      if (inv.status === 'success') {
-        totalInvoiced += inv.finalAmountPayable || 0;
-        totalPaid += inv.amountAlreadyPaid || 0;
-        totalOutstanding += inv.outstandingBalance || 0;
-        successfulCount++;
-      }
-    });
+  // Math override form state
+  const [calcOverrideReason, setCalcOverrideReason] = useState<string>('');
+  const [calcOverrideCheck, setCalcOverrideCheck] = useState<boolean>(false);
 
-    return { totalInvoiced, totalPaid, totalOutstanding, successfulCount };
-  }, [invoices]);
-
+  // Selected invoice
   const selectedInvoice = useMemo(() => {
     return invoices.find(inv => inv.id === selectedInvoiceId) || null;
   }, [invoices, selectedInvoiceId]);
 
+  // Duplicate Analysis against current batch & historical ledger
   const duplicateAnalysis = useMemo(() => {
-    return analyzeDuplicates(invoices);
-  }, [invoices]);
+    return analyzeDuplicates(invoices, historicalRecords);
+  }, [invoices, historicalRecords]);
 
-  const duplicateCount = useMemo(() => {
-    return Object.values(duplicateAnalysis).filter((x: any) => x.isDuplicate).length;
-  }, [duplicateAnalysis]);
+  // Math validation for selected invoice
+  const selectedCalcWarnings = useMemo<CalculationWarning[]>(() => {
+    if (!selectedInvoice || selectedInvoice.status !== 'success') return [];
+    return validateInvoiceMath(selectedInvoice);
+  }, [selectedInvoice]);
 
-  const missingInfoCount = useMemo(() => {
-    return invoices.filter(inv => inv.status === 'success' && getInvoiceMissingFields(inv).length > 0).length;
-  }, [invoices]);
+  // Duplicate details for selected invoice
+  const selectedDupDetails = useMemo(() => {
+    if (!selectedInvoice) return undefined;
+    return duplicateAnalysis[selectedInvoice.id];
+  }, [selectedInvoice, duplicateAnalysis]);
 
-  const { attentionInvoices, cleanInvoices } = useMemo(() => {
-    const attention: InvoiceData[] = [];
-    const clean: InvoiceData[] = [];
+  // Missing fields for selected invoice
+  const selectedMissingFields = useMemo(() => {
+    if (!selectedInvoice || selectedInvoice.status !== 'success') return [];
+    return getInvoiceMissingFields(selectedInvoice);
+  }, [selectedInvoice]);
 
-    invoices.forEach(inv => {
-      if (inv.status !== 'success') {
-        attention.push(inv);
-        return;
-      }
-      const isDuplicate = !!duplicateAnalysis[inv.id]?.isDuplicate;
-      const hasMissingFields = getInvoiceMissingFields(inv).length > 0;
-      const isExplicitlyVerified = inv.isVerified === true;
+  // Validation Summary for selected invoice
+  const selectedValidationSummary = useMemo<InvoiceValidationSummary | null>(() => {
+    if (!selectedInvoice) return null;
+    return getInvoiceValidationSummary(selectedInvoice, selectedDupDetails);
+  }, [selectedInvoice, selectedDupDetails]);
 
-      // Clean (Ready & Verified) means: status is success, not a duplicate, and either no missing fields OR explicitly verified by user
-      if (!isDuplicate && (!hasMissingFields || isExplicitlyVerified)) {
-        clean.push(inv);
-      } else {
-        attention.push(inv);
-      }
+  // Check if selected invoice can be explicitly human-verified
+  const canVerifySelected = useMemo(() => {
+    if (!selectedInvoice || selectedInvoice.status !== 'success') return false;
+    if (selectedMissingFields.length > 0) return false;
+    if (selectedDupDetails?.isDuplicate && !selectedInvoice.isDuplicateDismissed) return false;
+    if (selectedCalcWarnings.length > 0 && !selectedInvoice.calcOverrideConfirmed) return false;
+    return true;
+  }, [selectedInvoice, selectedMissingFields, selectedDupDetails, selectedCalcWarnings]);
+
+  // Verified & Ready for Three-Way Match invoices for Excel Export (Auto-Validated OR Human-Verified)
+  const cleanInvoices = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const summary = getInvoiceValidationSummary(inv, dup);
+      return summary.isReadyForExport;
     });
-
-    return { attentionInvoices: attention, cleanInvoices: clean };
   }, [invoices, duplicateAnalysis]);
+
+  // Invoices requiring human attention/review (Needs Review / Missing Info / Duplicates / Failed)
+  const attentionInvoices = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const summary = getInvoiceValidationSummary(inv, dup);
+      return !summary.isReadyForExport;
+    });
+  }, [invoices, duplicateAnalysis]);
+
+  // Metric counts for dashboard
+  const totalCount = invoices.length;
+  const pendingCount = invoices.filter(inv => inv.status === 'pending').length;
+
+  const autoValidatedCount = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const s = getInvoiceValidationSummary(inv, dup);
+      return s.status === 'auto_validated';
+    }).length;
+  }, [invoices, duplicateAnalysis]);
+
+  const humanVerifiedCount = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const s = getInvoiceValidationSummary(inv, dup);
+      return s.status === 'human_verified';
+    }).length;
+  }, [invoices, duplicateAnalysis]);
+
+  const reviewRequiredCount = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const s = getInvoiceValidationSummary(inv, dup);
+      return s.status === 'needs_review';
+    }).length;
+  }, [invoices, duplicateAnalysis]);
+
+  const duplicatesCount = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const s = getInvoiceValidationSummary(inv, dup);
+      return s.status === 'duplicate';
+    }).length;
+  }, [invoices, duplicateAnalysis]);
+
+  const failedCount = useMemo(() => {
+    return invoices.filter(inv => inv.status === 'error').length;
+  }, [invoices]);
+
+  // Invoice queue navigation
+  const currentInvoiceIndex = useMemo(() => {
+    return invoices.findIndex(i => i.id === selectedInvoiceId);
+  }, [invoices, selectedInvoiceId]);
+
+  const hasNextInvoice = currentInvoiceIndex >= 0 && currentInvoiceIndex < invoices.length - 1;
+  const hasPrevInvoice = currentInvoiceIndex > 0;
+
+  const handleGoNextInvoice = () => {
+    if (hasNextInvoice) {
+      setSelectedInvoiceId(invoices[currentInvoiceIndex + 1].id);
+    }
+  };
+
+  const handleGoPrevInvoice = () => {
+    if (hasPrevInvoice) {
+      setSelectedInvoiceId(invoices[currentInvoiceIndex - 1].id);
+    }
+  };
+
+  // Steps active states
+  const step1Completed = invoices.length > 0;
+  const step1Active = invoices.length === 0;
+  const step2Completed = invoices.length > 0 && attentionInvoices.length === 0;
+  const step2Active = invoices.length > 0 && attentionInvoices.length > 0;
+  const step3Active = cleanInvoices.length > 0;
 
   // Load Demo Invoices
   const handleLoadDemos = () => {
@@ -277,7 +397,7 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
-  // Helper to call extraction API with client-side retry on 429 rate limit
+  // Helper to call extraction API with retry on 429 rate limit
   const callExtractInvoiceApi = async (fileName: string, fileType: string, base64Data: string) => {
     let attempts = 0;
     const maxAttempts = 3;
@@ -297,7 +417,6 @@ export default function App() {
       const errorMessage = errData.error || 'Failed to extract data.';
 
       if (response.status === 429 && attempts < maxAttempts) {
-        // Wait 3 seconds before retrying on 429 rate limit
         await new Promise(r => setTimeout(r, 3000));
         continue;
       }
@@ -306,34 +425,47 @@ export default function App() {
     }
   };
 
-  // Convert files to base64 and process sequentially/concurrently
+  // Handle uploaded files strictly according to file rules
   const handleFiles = async (files: File[]) => {
     setIsUploading(true);
 
-    const validFiles = files.filter(file => {
-      const isPdf = file.type === 'application/pdf';
-      const isImage = file.type.startsWith('image/');
-      return isPdf || isImage;
-    });
+    const validFiles: File[] = [];
+    for (const file of files) {
+      if (file.size === 0) {
+        alert(`File "${file.name}" was rejected: The file is empty (0 bytes).`);
+        continue;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        alert(`File "${file.name}" was rejected: File size exceeds 20MB limit.`);
+        continue;
+      }
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png)$/i.test(file.name);
+      if (!isPdf && !isImage) {
+        alert(`File "${file.name}" was rejected: Unsupported format. Please upload PDF, JPEG, or PNG files.`);
+        continue;
+      }
+      validFiles.push(file);
+    }
 
     if (validFiles.length === 0) {
-      alert("Please upload valid PDF, JPEG, or PNG invoice files.");
       setIsUploading(false);
       return;
     }
 
-    // Create temporary entries in state
+    // Create temporary entries in state with isVerified: false and blank currency/supplier
     const newInvoices: InvoiceData[] = validFiles.map(file => ({
       id: `inv-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       fileName: file.name,
-      fileType: file.type,
+      fileType: file.type || 'application/pdf',
       status: 'pending',
+      isVerified: false,
       invoiceNumber: '',
       invoiceDate: '',
       paymentDueDate: '',
-      currency: 'USD',
+      currency: '', // Strictly leave blank if not found (NO USD DEFAULT!)
       purchaseOrder: '',
-      supplierName: '',
+      supplierName: '', // Strictly leave blank if not found!
       supplierAddress: '',
       supplierContact: '',
       businessRegistrationOrTaxId: '',
@@ -358,22 +490,23 @@ export default function App() {
     // Process each file
     for (let i = 0; i < validFiles.length; i++) {
       if (i > 0) {
-        // Stagger requests slightly to keep rate limits clean
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise(r => setTimeout(r, 1000));
       }
       const file = validFiles[i];
       const placeholder = newInvoices[i];
 
       try {
         const { base64Data, fullDataUrl } = await convertFileToBase64(file);
+        const computedFileHash = await calculateFileSha256(file);
         
-        // Immediately attach source preview URL and base64Data so document is viewable even if extraction hits API quota
+        // Save file preview immediately so PDF/Image viewer stays available even if extraction fails
         setInvoices(prev => prev.map(inv => {
           if (inv.id === placeholder.id) {
             return {
               ...inv,
               fileDataUrl: fullDataUrl,
-              base64Data: base64Data
+              base64Data: base64Data,
+              fileHash: computedFileHash
             };
           }
           return inv;
@@ -381,7 +514,6 @@ export default function App() {
 
         const data = await callExtractInvoiceApi(file.name, file.type, base64Data);
 
-        // Ensure all extracted array lineItems have unique client-side IDs
         const parsedLineItems: InvoiceLineItem[] = (data.lineItems || []).map((item: any, index: number) => ({
           id: `item-${Date.now()}-${index}-${Math.random().toString(36).substr(2, 5)}`,
           description: item.description || '',
@@ -398,14 +530,16 @@ export default function App() {
             return {
               ...inv,
               status: 'success',
+              isVerified: false, // Explicit human verification mandatory
               fileDataUrl: fullDataUrl,
               base64Data: base64Data,
               invoiceNumber: data.invoiceNumber || '',
+              suggestedInvoiceNumber: data.suggestedInvoiceNumber || '',
               invoiceDate: data.invoiceDate || '',
               paymentDueDate: data.paymentDueDate || '',
-              currency: data.currency || 'USD',
+              currency: data.currency || '', // Blank if not found!
               purchaseOrder: data.purchaseOrder || '',
-              supplierName: data.supplierName || 'Hardware Supplier',
+              supplierName: data.supplierName || '', // Blank if not found!
               supplierAddress: data.supplierAddress || '',
               supplierContact: data.supplierContact || '',
               businessRegistrationOrTaxId: data.businessRegistrationOrTaxId || '',
@@ -421,6 +555,7 @@ export default function App() {
               paymentTerms: data.paymentTerms || '',
               acceptedPaymentMethod: data.acceptedPaymentMethod || '',
               latePaymentTerms: data.latePaymentTerms || '',
+              aiReviewNotes: data.aiReviewNotes || [],
               lineItems: parsedLineItems
             };
           }
@@ -434,7 +569,7 @@ export default function App() {
             return {
               ...inv,
               status: 'error',
-              errorMessage: error.message || 'Verification or model parsing failed.'
+              errorMessage: error.message || 'Extraction failed. You can enter details manually using the document preview.'
             };
           }
           return inv;
@@ -445,117 +580,23 @@ export default function App() {
     setIsUploading(false);
   };
 
-  // Retry AI extraction for a specific invoice
-  const handleRetryExtraction = async (invId: string) => {
-    const target = invoices.find(inv => inv.id === invId);
-    if (!target) return;
-
-    let base64 = target.base64Data;
-    if (!base64 && target.fileDataUrl && target.fileDataUrl.includes(',')) {
-      base64 = target.fileDataUrl.split(',')[1];
-    }
-
-    if (!base64) {
-      alert("Source document file data is unavailable to retry extraction. Please re-upload the document.");
-      return;
-    }
-
-    // Set to pending state
-    setInvoices(prev => prev.map(inv => {
-      if (inv.id === invId) {
-        return {
-          ...inv,
-          status: 'pending',
-          errorMessage: undefined
-        };
-      }
-      return inv;
-    }));
-
-    try {
-      const data = await callExtractInvoiceApi(target.fileName, target.fileType, base64);
-
-      const parsedLineItems: InvoiceLineItem[] = (data.lineItems || []).map((item: any, index: number) => ({
-        id: `item-${Date.now()}-${index}-${Math.random().toString(36).substr(2, 5)}`,
-        description: item.description || '',
-        quantity: typeof item.quantity === 'number' ? item.quantity : 1,
-        unitPrice: typeof item.unitPrice === 'number' ? item.unitPrice : 0,
-        discount: typeof item.discount === 'number' ? item.discount : 0,
-        taxRate: typeof item.taxRate === 'number' ? item.taxRate : 0,
-        taxAmount: typeof item.taxAmount === 'number' ? item.taxAmount : 0,
-        totalAmount: typeof item.totalAmount === 'number' ? item.totalAmount : 0,
-      }));
-
-      setInvoices(prev => prev.map(inv => {
-        if (inv.id === invId) {
-          return {
-            ...inv,
-            status: 'success',
-            errorMessage: undefined,
-            invoiceNumber: data.invoiceNumber || inv.invoiceNumber || '',
-            invoiceDate: data.invoiceDate || inv.invoiceDate || '',
-            paymentDueDate: data.paymentDueDate || inv.paymentDueDate || '',
-            currency: data.currency || inv.currency || 'USD',
-            purchaseOrder: data.purchaseOrder || inv.purchaseOrder || '',
-            supplierName: data.supplierName || inv.supplierName || 'Hardware Supplier',
-            supplierAddress: data.supplierAddress || inv.supplierAddress || '',
-            supplierContact: data.supplierContact || inv.supplierContact || '',
-            businessRegistrationOrTaxId: data.businessRegistrationOrTaxId || inv.businessRegistrationOrTaxId || '',
-            bankDetails: data.bankDetails || inv.bankDetails || '',
-            bankAccount: data.bankAccount || inv.bankAccount || '',
-            invoiceSubtotal: data.invoiceSubtotal || 0,
-            totalDiscount: data.totalDiscount || 0,
-            totalTax: data.totalTax || 0,
-            deliveryCharges: data.deliveryCharges || 0,
-            finalAmountPayable: data.finalAmountPayable || 0,
-            amountAlreadyPaid: data.amountAlreadyPaid || 0,
-            outstandingBalance: data.outstandingBalance || 0,
-            paymentTerms: data.paymentTerms || '',
-            acceptedPaymentMethod: data.acceptedPaymentMethod || '',
-            latePaymentTerms: data.latePaymentTerms || '',
-            lineItems: parsedLineItems
-          };
-        }
-        return inv;
-      }));
-
-    } catch (error: any) {
-      console.error("Retry extraction failed", target.fileName, error);
-      setInvoices(prev => prev.map(inv => {
-        if (inv.id === invId) {
-          return {
-            ...inv,
-            status: 'error',
-            errorMessage: error.message || 'Retry extraction failed.'
-          };
-        }
-        return inv;
-      }));
-    }
-  };
-
-  // Convert a failed invoice into a manual draft so the user can type in details directly beside the PDF preview
+  // Convert failed upload into manual draft (no inventing fake dates/numbers/currencies!)
   const handleConvertErrorToDraft = (invId: string) => {
     setInvoices(prev => prev.map(inv => {
       if (inv.id === invId) {
-        const derivedSupplier = inv.supplierName && inv.supplierName.trim() !== '' 
-          ? inv.supplierName 
-          : inv.fileName.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-        const today = new Date().toISOString().split('T')[0];
-        const thirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
         return {
           ...inv,
           status: 'success',
+          isVerified: false,
           errorMessage: undefined,
-          supplierName: derivedSupplier || 'Hardware Supplier Draft',
-          invoiceNumber: inv.invoiceNumber || `INV-${Date.now().toString().slice(-6)}`,
-          invoiceDate: inv.invoiceDate || today,
-          paymentDueDate: inv.paymentDueDate || thirtyDays,
-          paymentTerms: inv.paymentTerms || 'Net 30',
-          currency: inv.currency || 'USD',
-          acceptedPaymentMethod: inv.acceptedPaymentMethod || 'Bank Transfer'
+          // String fields begin blank per Repair 3 & Repair 4!
+          supplierName: inv.supplierName || '',
+          invoiceNumber: inv.invoiceNumber || '',
+          invoiceDate: inv.invoiceDate || '',
+          paymentDueDate: inv.paymentDueDate || '',
+          paymentTerms: inv.paymentTerms || '',
+          currency: inv.currency || '',
+          acceptedPaymentMethod: inv.acceptedPaymentMethod || ''
         };
       }
       return inv;
@@ -575,20 +616,21 @@ export default function App() {
     });
   };
 
-  // Add a blank invoice manually
+  // Create a blank manual invoice entry (fields begin blank per Repair 3)
   const handleAddManualInvoice = () => {
     const manualId = `manual-${Date.now()}`;
     const baseManual: InvoiceData = {
       id: manualId,
-      fileName: 'manual_entry.pdf',
+      fileName: `Manual_Entry_${new Date().toISOString().slice(0, 10)}.pdf`,
       fileType: 'application/pdf',
       status: 'success',
-      invoiceNumber: `INV-${Date.now().toString().slice(-6)}`,
-      invoiceDate: new Date().toISOString().split('T')[0],
-      paymentDueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-      currency: 'USD',
+      isVerified: false,
+      invoiceNumber: '',
+      invoiceDate: '',
+      paymentDueDate: '',
+      currency: '', // Blank
       purchaseOrder: '',
-      supplierName: 'New Hardware Supplier',
+      supplierName: '', // Blank
       supplierAddress: '',
       supplierContact: '',
       businessRegistrationOrTaxId: '',
@@ -601,8 +643,8 @@ export default function App() {
       finalAmountPayable: 0,
       amountAlreadyPaid: 0,
       outstandingBalance: 0,
-      paymentTerms: 'Net 30',
-      acceptedPaymentMethod: 'Bank Transfer',
+      paymentTerms: '',
+      acceptedPaymentMethod: '',
       latePaymentTerms: '',
       lineItems: []
     };
@@ -626,18 +668,33 @@ export default function App() {
     }
   };
 
-  // Edit fields dynamically
+  // Clear all invoices with confirmation
+  const handleConfirmClearAll = () => {
+    setInvoices([]);
+    setSelectedInvoiceId(null);
+    setShowClearConfirmModal(false);
+  };
+
+  // Edit fields dynamically (resets verification & override confirmation)
   const handleUpdateField = (field: keyof InvoiceData, value: any) => {
     if (!selectedInvoiceId) return;
     setInvoices(prev => prev.map(inv => {
       if (inv.id === selectedInvoiceId) {
         const updated = { ...inv, [field]: value };
-        // Recalculate outstanding balance if we change amounts
+        
+        // Recalculate outstanding balance if amounts change
         if (field === 'finalAmountPayable' || field === 'amountAlreadyPaid') {
           const finalAmt = field === 'finalAmountPayable' ? Number(value) : inv.finalAmountPayable;
           const paidAmt = field === 'amountAlreadyPaid' ? Number(value) : inv.amountAlreadyPaid;
           updated.outstandingBalance = Math.max(0, finalAmt - paidAmt);
         }
+
+        // Whenever fields are edited (except explicit verification toggle), reset verification & override status
+        if (field !== 'isVerified' && field !== 'calcOverrideConfirmed' && field !== 'isDuplicateDismissed') {
+          updated.isVerified = false;
+          updated.calcOverrideConfirmed = false;
+        }
+
         return updated;
       }
       return inv;
@@ -652,13 +709,11 @@ export default function App() {
         const updatedItems = inv.lineItems.map(item => {
           if (item.id === itemId) {
             const updatedItem = { ...item, [field]: value };
-            // Auto recalculate the line item total
             const qty = field === 'quantity' ? Number(value) : item.quantity;
             const price = field === 'unitPrice' ? Number(value) : item.unitPrice;
             const disc = field === 'discount' ? Number(value) : item.discount;
             const taxR = field === 'taxRate' ? Number(value) : item.taxRate;
             
-            // Item total formula: (Qty * Price) - Item-level discount + Item-level tax amount
             const preTax = (qty * price) - disc;
             const calculatedTax = parseFloat((preTax * (taxR / 100)).toFixed(2));
             
@@ -671,7 +726,9 @@ export default function App() {
 
         return {
           ...inv,
-          lineItems: updatedItems
+          lineItems: updatedItems,
+          isVerified: false,
+          calcOverrideConfirmed: false
         };
       }
       return inv;
@@ -683,7 +740,7 @@ export default function App() {
     if (!selectedInvoiceId) return;
     const newItem: InvoiceLineItem = {
       id: `item-${Date.now()}`,
-      description: 'New Hardware Supply / Service',
+      description: 'Hardware Item / Service',
       quantity: 1,
       unitPrice: 0,
       discount: 0,
@@ -696,7 +753,9 @@ export default function App() {
       if (inv.id === selectedInvoiceId) {
         return {
           ...inv,
-          lineItems: [...inv.lineItems, newItem]
+          lineItems: [...inv.lineItems, newItem],
+          isVerified: false,
+          calcOverrideConfirmed: false
         };
       }
       return inv;
@@ -710,7 +769,9 @@ export default function App() {
       if (inv.id === selectedInvoiceId) {
         return {
           ...inv,
-          lineItems: inv.lineItems.filter(item => item.id !== itemId)
+          lineItems: inv.lineItems.filter(item => item.id !== itemId),
+          isVerified: false,
+          calcOverrideConfirmed: false
         };
       }
       return inv;
@@ -721,7 +782,6 @@ export default function App() {
   const handleSyncTotals = () => {
     if (!selectedInvoice) return;
 
-    // Sum of item totals before tax
     let calcSubtotal = 0;
     let calcTax = 0;
     let calcDiscount = 0;
@@ -744,136 +804,389 @@ export default function App() {
           totalDiscount: parseFloat(calcDiscount.toFixed(2)),
           totalTax: parseFloat(calcTax.toFixed(2)),
           finalAmountPayable: parseFloat(finalAmount.toFixed(2)),
-          outstandingBalance: parseFloat(outstanding.toFixed(2))
+          outstandingBalance: parseFloat(outstanding.toFixed(2)),
+          isVerified: false,
+          calcOverrideConfirmed: false
         };
       }
       return inv;
     }));
   };
 
-  // Single or Bulk Excel Export - Only Ready & Verified Invoices
-  const handleExportAll = () => {
-    if (cleanInvoices.length === 0) {
-      alert("No ready and verified invoices available to download.\n\nInvoices with missing fields, duplicate flags, or processing errors must be reviewed and completed before exporting to Excel.");
+  // Mark selected invoice as verified (saves to historical ledger)
+  const handleMarkAsVerified = () => {
+    if (!selectedInvoice) return;
+    if (!canVerifySelected) {
+      alert("Cannot verify invoice due to unhandled blockers (missing fields, duplicate flags, or calculation warnings).");
       return;
     }
 
-    const unverifiedCount = invoices.length - cleanInvoices.length;
-    if (unverifiedCount > 0) {
-      alert(`Consolidated Spreadsheet Export:\n\nExporting ${cleanInvoices.length} Ready & Verified invoice(s) to Excel.\n\nNote: ${unverifiedCount} invoice(s) that are incomplete, unverified, or flagged as duplicates were excluded from this download.`);
+    setInvoices(prev => prev.map(inv => {
+      if (inv.id === selectedInvoice.id) {
+        const verifiedInv = { ...inv, isVerified: true };
+        saveVerifiedInvoiceToHistory(verifiedInv);
+        return verifiedInv;
+      }
+      return inv;
+    }));
+
+    setHistoricalRecords(getHistoricalVerifiedInvoices());
+  };
+
+  // Dismiss duplicate warning
+  const handleDismissDuplicate = () => {
+    if (!selectedInvoice) return;
+    setInvoices(prev => prev.map(inv => {
+      if (inv.id === selectedInvoice.id) {
+        return { ...inv, isDuplicateDismissed: true };
+      }
+      return inv;
+    }));
+  };
+
+  // Confirm calculation override
+  const handleConfirmCalcOverride = () => {
+    if (!selectedInvoice) return;
+    if (!calcOverrideCheck) {
+      alert("Please check the box confirming you have verified the numbers against the source document.");
+      return;
+    }
+    if (!calcOverrideReason.trim()) {
+      alert("Please provide a brief reason or comment explaining why the calculation difference is accepted (e.g. 'Supplier round-off error on paper').");
+      return;
     }
 
-    exportInvoicesToExcel(cleanInvoices, `Hardware_AP_Verified_Invoices_${new Date().toISOString().split('T')[0]}.xlsx`);
+    setInvoices(prev => prev.map(inv => {
+      if (inv.id === selectedInvoice.id) {
+        return {
+          ...inv,
+          calcOverrideConfirmed: true,
+          calcOverrideReason: calcOverrideReason.trim()
+        };
+      }
+      return inv;
+    }));
+
+    setCalcOverrideReason('');
+    setCalcOverrideCheck(false);
+  };
+
+  // Apply suggested invoice number from filename
+  const handleApplySuggestedInvoiceNumber = () => {
+    if (!selectedInvoice || !selectedInvoice.suggestedInvoiceNumber) return;
+    handleUpdateField('invoiceNumber', selectedInvoice.suggestedInvoiceNumber);
+  };
+
+  // Single or Bulk Excel Export
+  const handleExportAll = () => {
+    if (cleanInvoices.length === 0) {
+      alert("No invoices ready for three-way matching.\n\nOnly invoices that pass all automated validation checks ('Auto-Validated') or have been resolved by Madam Lim ('Human-Verified') are included in Excel exports.");
+      return;
+    }
+
+    const attentionCount = invoices.length - cleanInvoices.length;
+    if (attentionCount > 0) {
+      alert(`Excel Spreadsheet Export:\n\nExporting ${cleanInvoices.length} invoice(s) ready for three-way matching to Excel.\n\nNote: ${attentionCount} invoice(s) currently requiring human review were excluded.`);
+    }
+
+    exportInvoicesToExcel(cleanInvoices, `AP_Invoices_Ready_For_Matching_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
   const handleExportSelected = () => {
     if (!selectedInvoice) return;
+    const dup = duplicateAnalysis[selectedInvoice.id];
+    const summary = getInvoiceValidationSummary(selectedInvoice, dup);
 
-    const isVerifiedAndReady = cleanInvoices.some(inv => inv.id === selectedInvoice.id);
-
-    if (!isVerifiedAndReady) {
-      const missingFields = getInvoiceMissingFields(selectedInvoice);
-      const isDuplicate = !!duplicateAnalysis[selectedInvoice.id]?.isDuplicate;
-      
-      let message = `Cannot export "${selectedInvoice.supplierName || selectedInvoice.fileName}" because it is not ready & verified.\n\n`;
-      if (selectedInvoice.status === 'pending') {
-        message += "• The document is still analyzing.\n";
-      } else if (selectedInvoice.status === 'error') {
-        message += "• The document encountered an extraction error.\n";
-      } else {
-        if (isDuplicate) message += "• Flagged as a duplicate document in the ledger.\n";
-        if (missingFields.length > 0) message += `• Missing mandatory fields: ${missingFields.join(', ')}.\n`;
-      }
-      message += "\nPlease fill in the missing fields or click 'Mark as Verified' before exporting to Excel.";
-      alert(message);
+    if (!summary.isReadyForExport) {
+      alert(`Cannot export "${selectedInvoice.supplierName || selectedInvoice.fileName}" because it requires human review.\n\nPlease resolve all flagged issues or exceptions before exporting.`);
       return;
     }
 
-    exportInvoicesToExcel([selectedInvoice], `Verified_Invoice_${selectedInvoice.invoiceNumber || 'Detail'}.xlsx`);
+    exportInvoicesToExcel([selectedInvoice], `Invoice_${selectedInvoice.invoiceNumber || selectedInvoice.id}.xlsx`);
+  };
+
+  // Open Clear Duplicate History confirmation modal
+  const handleClearHistory = () => {
+    setShowClearHistoryConfirmModal(true);
+  };
+
+  // Confirm Clear Duplicate History (removes version-2 historical records)
+  const handleConfirmClearHistory = () => {
+    clearHistoricalVerifiedInvoices();
+    setHistoricalRecords([]);
+    setShowClearHistoryConfirmModal(false);
+  };
+
+  // Execute the 12 required duplicate detection test scenarios
+  const handleRunUnitTests = () => {
+    const res = runAllDuplicateTests();
+    setTestModalResults(res);
   };
 
   const renderFormContent = (effectiveTab: 'supplier' | 'metadata' | 'banking' | 'totals') => {
     if (!selectedInvoice) return null;
-    const dupInfo = duplicateAnalysis[selectedInvoice.id];
-    const missingFields = getInvoiceMissingFields(selectedInvoice);
 
     return (
       <div className="space-y-6">
-        {dupInfo?.isDuplicate && (
-          <div className="bg-amber-500/10 border border-amber-300 border-l-4 border-l-amber-500 p-4 rounded-r-xl shadow-xs">
-            <div className="flex gap-3">
-              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h4 className="font-bold text-amber-900 text-sm flex items-center gap-2">
-                  Attention: Flagged as Duplicate Document
-                </h4>
-                <p className="text-xs text-amber-700 mt-1 leading-relaxed">
-                  This document shares an identical <span className="font-semibold text-amber-800">{dupInfo.reason === 'Filename' ? 'Filename' : 'Invoice Number & Supplier'}</span> with another invoice in the ledger. 
-                  {dupInfo.primaryId && (
-                    <span> The first/primary unique record is kept for consolidated exports. This item is fully editable, but will be excluded from the "Download All" spreadsheet to prevent redundant rows.</span>
-                  )}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {missingFields.length > 0 && !selectedInvoice.isVerified && (
-          <div className="bg-amber-50 border border-amber-200 border-l-4 border-l-amber-500 p-4 rounded-r-xl shadow-xs">
+        {/* DUPLICATE WARNING CARD */}
+        {selectedDupDetails?.isDuplicate && (
+          <div className="bg-amber-50 border border-amber-300 border-l-4 border-l-amber-500 p-4 rounded-r-xl shadow-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex gap-3">
                 <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                 <div>
                   <h4 className="font-bold text-amber-900 text-sm flex items-center gap-2">
-                    Caution: Invoice is missing required AP details
+                    Duplicate Document Flagged
                     <span className="text-[10px] bg-amber-200 text-amber-800 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
-                      {missingFields.length} missing
+                      Matched: {selectedDupDetails.reason}
                     </span>
                   </h4>
                   <p className="text-xs text-amber-700 mt-1 leading-relaxed">
-                    The following mandatory accounts payable columns are empty or unpopulated. Populate them or mark as verified to include in Excel exports:
+                    {selectedDupDetails.isHistorical ? (
+                      <span>This invoice matches a previously verified record stored in the ledger ({selectedDupDetails.historicalMatch?.supplierName} - {selectedDupDetails.historicalMatch?.invoiceNumber}).</span>
+                    ) : (
+                      <span>This invoice shares an identical filename or invoice number &amp; supplier with another item in this batch.</span>
+                    )}
                   </p>
-                  <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-y-1 gap-x-4 text-[11px] text-amber-800 mt-2.5 font-medium list-disc pl-4">
-                    {missingFields.map((field, idx) => (
-                      <li key={idx}>{field}</li>
-                    ))}
-                  </ul>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleUpdateField('isVerified', true)}
-                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-xs transition cursor-pointer self-start sm:self-center"
-                title="Manually verify this invoice so it can be exported to Excel"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                Mark as Verified
-              </button>
+              {!selectedInvoice.isDuplicateDismissed ? (
+                <button
+                  type="button"
+                  onClick={handleDismissDuplicate}
+                  className="shrink-0 px-3 py-1.5 bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs rounded-lg transition cursor-pointer self-start sm:self-center"
+                >
+                  Confirm Unique / Dismiss Flag
+                </button>
+              ) : (
+                <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded border border-emerald-300 shrink-0">
+                  Duplicate Flag Dismissed
+                </span>
+              )}
             </div>
           </div>
         )}
 
-        {selectedInvoice.isVerified && (
-          <div className="bg-emerald-50 border border-emerald-200 border-l-4 border-l-emerald-500 p-3.5 rounded-r-xl shadow-xs flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-              <div>
-                <h4 className="font-bold text-emerald-900 text-xs uppercase tracking-wide">
-                  Invoice Verified &amp; Ready for Excel Export
+        {/* CALCULATION WARNINGS CARD */}
+        {selectedCalcWarnings.length > 0 && (
+          <div className="bg-rose-50 border border-rose-200 border-l-4 border-l-rose-500 p-4 rounded-r-xl shadow-xs">
+            <div className="flex gap-3">
+              <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="flex-1 space-y-2">
+                <h4 className="font-bold text-rose-900 text-sm flex items-center justify-between">
+                  <span>Independent Math Check Warnings ({selectedCalcWarnings.length})</span>
+                  {selectedInvoice.calcOverrideConfirmed && (
+                    <span className="text-xs font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-300">
+                      Human Override Confirmed
+                    </span>
+                  )}
                 </h4>
-                <p className="text-[11px] text-emerald-700 mt-0.5">
-                  This document is marked as verified and will be included when downloading the Excel spreadsheet.
+
+                <p className="text-xs text-rose-800 leading-relaxed">
+                  The amounts printed on the invoice do not match independent mathematical formulas:
                 </p>
+
+                <ul className="space-y-1.5 text-xs text-rose-900 bg-white/80 p-3 rounded-lg border border-rose-200 font-mono">
+                  {selectedCalcWarnings.map((warn, idx) => (
+                    <li key={idx} className="flex flex-col gap-0.5">
+                      <div className="font-bold text-rose-800">
+                        • [{warn.type === 'line_item_mismatch' ? 'Line Item Math' : 'Header Total Math'}] {warn.description}
+                      </div>
+                      <div className="text-[11px] text-slate-600 pl-3">
+                        Document states: <span className="font-bold text-slate-800">${warn.documentValue.toFixed(2)}</span> | Formula yields: <span className="font-bold text-slate-800">${warn.calculatedValue.toFixed(2)}</span> (Diff: ${warn.difference.toFixed(2)})
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+
+                {!selectedInvoice.calcOverrideConfirmed ? (
+                  <div className="bg-white p-3 rounded-lg border border-rose-200 space-y-2 mt-3">
+                    <h5 className="font-bold text-xs text-slate-800">Human Review &amp; Calculation Override</h5>
+                    <p className="text-[11px] text-slate-600">
+                      If the discrepancy is due to a physical document typo or supplier rounding rule, verify the document and confirm an override below:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="calc-override-check"
+                        checked={calcOverrideCheck}
+                        onChange={(e) => setCalcOverrideCheck(e.target.checked)}
+                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      />
+                      <label htmlFor="calc-override-check" className="text-xs font-semibold text-slate-700 cursor-pointer">
+                        I have verified these values against the original source document.
+                      </label>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Reason for override (e.g. 'Supplier printed rounding difference on paper')"
+                      value={calcOverrideReason}
+                      onChange={(e) => setCalcOverrideReason(e.target.value)}
+                      className="w-full text-xs border border-slate-300 rounded-md px-2.5 py-1.5 focus:outline-none focus:border-rose-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleConfirmCalcOverride}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-md transition cursor-pointer"
+                    >
+                      Confirm Calculation Override
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-emerald-800 italic bg-emerald-50 p-2 rounded border border-emerald-200">
+                    Override Reason Logged: "{selectedInvoice.calcOverrideReason || 'Verified against document'}"
+                  </p>
+                )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* MISSING MANDATORY FIELDS CARD */}
+        {selectedMissingFields.length > 0 && !selectedInvoice.isVerified && (
+          <div className="bg-amber-50 border border-amber-200 border-l-4 border-l-amber-500 p-4 rounded-r-xl shadow-xs">
+            <div className="flex gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-bold text-amber-900 text-sm flex items-center gap-2">
+                  Missing Mandatory AP Fields ({selectedMissingFields.length})
+                </h4>
+                <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                  The following required fields must be filled before verification:
+                </p>
+                <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-y-1 gap-x-4 text-[11px] text-amber-800 mt-2 font-medium list-disc pl-4">
+                  {selectedMissingFields.map((field, idx) => (
+                    <li key={idx}>{field}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SUGGESTED INVOICE NUMBER CARD */}
+        {selectedInvoice.suggestedInvoiceNumber && selectedInvoice.invoiceNumber !== selectedInvoice.suggestedInvoiceNumber && (
+          <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl flex items-center justify-between text-xs text-blue-900">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>Filename contains suggested code: <strong>{selectedInvoice.suggestedInvoiceNumber}</strong></span>
             </div>
             <button
               type="button"
-              onClick={() => handleUpdateField('isVerified', false)}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-700 hover:underline cursor-pointer"
+              onClick={handleApplySuggestedInvoiceNumber}
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] rounded transition cursor-pointer"
             >
-              Unverify
+              Apply to Invoice Number
             </button>
+          </div>
+        )}
+
+        {/* AI REVIEW NOTES PANEL */}
+        {selectedInvoice.aiReviewNotes && selectedInvoice.aiReviewNotes.length > 0 && (
+          <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-xl text-xs space-y-1.5">
+            <h5 className="font-bold text-slate-700 flex items-center gap-1.5">
+              <FileSearch className="w-4 h-4 text-slate-500" />
+              AI Review &amp; Extraction Notes
+            </h5>
+            <ul className="space-y-1 text-slate-600 text-[11px]">
+              {selectedInvoice.aiReviewNotes.map((note, idx) => (
+                <li key={idx} className="flex items-start gap-1.5">
+                  <span className="text-slate-400">•</span>
+                  <span>{note.message}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* VERIFICATION STATUS & ACTION BAR */}
+        {selectedValidationSummary && (
+          <div className={`p-4 rounded-xl border flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs ${
+            selectedValidationSummary.status === 'auto_validated'
+              ? 'bg-blue-50 border-blue-300'
+              : selectedValidationSummary.status === 'human_verified'
+                ? 'bg-emerald-50 border-emerald-300'
+                : 'bg-amber-50 border-amber-300'
+          }`}>
+            <div className="flex items-start gap-3">
+              {selectedValidationSummary.status === 'auto_validated' ? (
+                <CheckCircle2 className="w-6 h-6 text-blue-600 shrink-0 mt-0.5" />
+              ) : selectedValidationSummary.status === 'human_verified' ? (
+                <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0 mt-0.5" />
+              )}
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className={`font-bold text-sm ${
+                    selectedValidationSummary.status === 'auto_validated'
+                      ? 'text-blue-950'
+                      : selectedValidationSummary.status === 'human_verified'
+                        ? 'text-emerald-950'
+                        : 'text-amber-950'
+                  }`}>
+                    {selectedValidationSummary.statusLabel}
+                  </h4>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${selectedValidationSummary.statusBadgeClass}`}>
+                    {selectedValidationSummary.status.toUpperCase().replace('_', ' ')}
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                  {selectedValidationSummary.status === 'auto_validated' && (
+                    "This invoice passed all automated checks (mandatory fields present, PO available, math balanced, no duplicates). It is ready for three-way matching and included in Excel export."
+                  )}
+                  {selectedValidationSummary.status === 'human_verified' && (
+                    "Madam Lim resolved exceptions and explicitly verified this invoice. It is ready for three-way matching and included in Excel export."
+                  )}
+                  {selectedValidationSummary.status === 'needs_review' && (
+                    "Exceptions detected. Madam Lim should review and correct the flagged issues below before three-way matching:"
+                  )}
+                  {selectedValidationSummary.status === 'duplicate' && (
+                    "Duplicate document detected. Please review against historical ledger or current batch."
+                  )}
+                  {selectedValidationSummary.status === 'extraction_failed' && (
+                    "Document extraction failed. Please review file or enter details manually."
+                  )}
+                </p>
+
+                {selectedValidationSummary.reasonsForReview.length > 0 && selectedValidationSummary.status !== 'auto_validated' && selectedValidationSummary.status !== 'human_verified' && (
+                  <ul className="mt-2 space-y-1 text-xs text-amber-900 bg-amber-100/60 p-2.5 rounded-lg border border-amber-200 list-disc pl-5">
+                    {selectedValidationSummary.reasonsForReview.map((reason, idx) => (
+                      <li key={idx} className="font-medium">{reason}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              {selectedInvoice.isVerified ? (
+                <button
+                  type="button"
+                  onClick={() => handleUpdateField('isVerified', false)}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200 rounded transition cursor-pointer"
+                >
+                  Unverify
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleMarkAsVerified}
+                  disabled={!canVerifySelected}
+                  className={`px-4 py-2 font-bold text-xs rounded-lg shadow-xs flex items-center gap-1.5 transition ${
+                    canVerifySelected 
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer' 
+                      : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  }`}
+                  title={canVerifySelected ? 'Explicitly mark invoice as human-verified' : 'Cannot verify while mandatory fields or blockers remain unresolved'}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Mark as Verified
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -894,28 +1207,24 @@ export default function App() {
                 value={selectedInvoice.supplierName}
                 onChange={(e) => handleUpdateField('supplierName', e.target.value)}
                 className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 ${
-                  !selectedInvoice.supplierName || selectedInvoice.supplierName.trim() === '' || selectedInvoice.supplierName === 'Unknown Supplier'
+                  !selectedInvoice.supplierName || selectedInvoice.supplierName.trim() === ''
                     ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
                     : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
                 }`}
-                placeholder="Apex Fasteners / Acme Timber"
+                placeholder="Apex Fasteners / Titan Tools"
               />
             </div>
 
             <div className="col-span-1 md:col-span-2">
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5 flex items-center gap-1">
                 <MapPin className="w-3.5 h-3.5" />
-                Supplier Corporate Address
+                Supplier Address
               </label>
               <textarea
                 value={selectedInvoice.supplierAddress}
                 onChange={(e) => handleUpdateField('supplierAddress', e.target.value)}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 min-h-[70px] ${
-                  !selectedInvoice.supplierAddress || selectedInvoice.supplierAddress.trim() === ''
-                    ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
-                    : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
-                }`}
-                placeholder="123 Industrial Dr..."
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 min-h-[70px]"
+                placeholder="1048 Industrial Parkway, Suite E..."
               />
             </div>
 
@@ -958,7 +1267,7 @@ export default function App() {
           >
             <div>
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5">
-                Invoice Number
+                Invoice Number *
               </label>
               <input
                 type="text"
@@ -969,7 +1278,7 @@ export default function App() {
                     ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
                     : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
                 }`}
-                placeholder="INV-XXXX"
+                placeholder="INV-2026-2049"
               />
             </div>
 
@@ -989,7 +1298,7 @@ export default function App() {
             <div>
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5 flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5" />
-                Invoice Issue Date
+                Invoice Issue Date *
               </label>
               <input
                 type="date"
@@ -1006,7 +1315,7 @@ export default function App() {
             <div>
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5 flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5" />
-                Payment Due Date
+                Payment Due Date *
               </label>
               <input
                 type="date"
@@ -1022,7 +1331,7 @@ export default function App() {
 
             <div>
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5">
-                Invoice Currency used
+                Invoice Currency *
               </label>
               <input
                 type="text"
@@ -1033,7 +1342,7 @@ export default function App() {
                     ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
                     : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
                 }`}
-                placeholder="USD, EUR, GBP, CAD"
+                placeholder="e.g. USD, SGD, EUR, GBP"
               />
             </div>
           </motion.div>
@@ -1054,7 +1363,7 @@ export default function App() {
                 value={selectedInvoice.bankDetails}
                 onChange={(e) => handleUpdateField('bankDetails', e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 min-h-[60px]"
-                placeholder="Trust Bank, Cleveland Branch (BIC: TRSTUS44)"
+                placeholder="Cleveland Trust Commerce Bank (SWIFT: CLTRUS33)"
               />
             </div>
 
@@ -1067,7 +1376,7 @@ export default function App() {
                 value={selectedInvoice.bankAccount}
                 onChange={(e) => handleUpdateField('bankAccount', e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                placeholder="US10-2030-4050-6070"
+                placeholder="US89-1020-3040-5060"
               />
             </div>
 
@@ -1079,19 +1388,14 @@ export default function App() {
                 type="text"
                 value={selectedInvoice.acceptedPaymentMethod}
                 onChange={(e) => handleUpdateField('acceptedPaymentMethod', e.target.value)}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 ${
-                  !selectedInvoice.acceptedPaymentMethod || selectedInvoice.acceptedPaymentMethod.trim() === ''
-                    ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
-                    : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
-                }`}
-                placeholder="Bank Transfer, ACH, Check"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                placeholder="Bank Transfer, Credit Card"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5 flex items-center justify-between">
-                <span>Standard Payment Terms</span>
-                <span className="text-[10px] text-slate-400 font-normal">Parsed from fine print / T&amp;C</span>
+              <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5">
+                Standard Payment Terms *
               </label>
               <input
                 type="text"
@@ -1102,7 +1406,7 @@ export default function App() {
                     ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
                     : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
                 }`}
-                placeholder="e.g., Net 30, Due on Receipt, 2/10 Net 30"
+                placeholder="Net 30, Due on Receipt, 2/10 Net 30"
               />
               <div className="mt-1.5 flex flex-wrap gap-1 items-center">
                 <span className="text-[10px] text-slate-400 font-medium mr-1">Presets:</span>
@@ -1144,18 +1448,14 @@ export default function App() {
           >
             <div>
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5">
-                Invoice Subtotal ({selectedInvoice.currency})
+                Invoice Subtotal ({selectedInvoice.currency || 'Unspecified'})
               </label>
               <input
                 type="number"
                 step="0.01"
                 value={selectedInvoice.invoiceSubtotal}
                 onChange={(e) => handleUpdateField('invoiceSubtotal', Number(e.target.value))}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 ${
-                  selectedInvoice.invoiceSubtotal === undefined || selectedInvoice.invoiceSubtotal === null || selectedInvoice.invoiceSubtotal <= 0
-                    ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
-                    : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
-                }`}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
@@ -1181,11 +1481,7 @@ export default function App() {
                 step="0.01"
                 value={selectedInvoice.totalTax}
                 onChange={(e) => handleUpdateField('totalTax', Number(e.target.value))}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 ${
-                  selectedInvoice.totalTax === undefined || selectedInvoice.totalTax === null
-                    ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
-                    : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
-                }`}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
@@ -1204,18 +1500,14 @@ export default function App() {
 
             <div>
               <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5 font-bold text-slate-900">
-                Final Amount Payable ({selectedInvoice.currency})
+                Final Amount Payable * ({selectedInvoice.currency || 'Unspecified'})
               </label>
               <input
                 type="number"
                 step="0.01"
                 value={selectedInvoice.finalAmountPayable}
                 onChange={(e) => handleUpdateField('finalAmountPayable', Number(e.target.value))}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 ${
-                  selectedInvoice.finalAmountPayable === undefined || selectedInvoice.finalAmountPayable === null || selectedInvoice.finalAmountPayable <= 0
-                    ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500 font-semibold'
-                    : 'border-slate-800 bg-slate-100 focus:border-emerald-500 font-semibold'
-                }`}
+                className="w-full border border-slate-800 bg-slate-100 font-semibold rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
               />
             </div>
 
@@ -1249,7 +1541,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSyncTotals}
-                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition hover:scale-[1.01] cursor-pointer"
+                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs transition cursor-pointer"
                 title="Auto recalculate totals based on item rows"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -1259,7 +1551,7 @@ export default function App() {
           </motion.div>
         )}
 
-        {/* Granular Line Items Breakdown Section - Always Visible below tabs */}
+        {/* Granular Line Items Breakdown Section */}
         <div id="line-items-section" className="mt-8 border-t border-slate-200 pt-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
             <div>
@@ -1370,7 +1662,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleDeleteLineItem(item.id)}
-                          className="text-slate-400 hover:text-red-500 p-1 rounded hover:bg-slate-100 transition"
+                          className="text-slate-400 hover:text-red-500 p-1 rounded hover:bg-slate-100 transition cursor-pointer"
                           title="Delete item"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1383,746 +1675,881 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* AUDIT & SUPPLIER FAIRNESS DISCLAIMER */}
+        <div className="border-t border-slate-200 pt-4 text-[11px] text-slate-500 flex items-center gap-2">
+          <Info className="w-4 h-4 text-slate-400 shrink-0" />
+          <span>
+            <strong>Supplier Validation Standard:</strong> The same validation rules are applied to every supplier. An invoice is flagged only because of information in the document, missing fields, calculation differences or a specific duplicate match.
+          </span>
+        </div>
       </div>
     );
   };
 
   const renderInvoiceItem = (inv: InvoiceData, isAttentionSection: boolean) => {
     const isSelected = inv.id === selectedInvoiceId;
-    const missingFields = inv.status === 'success' ? getInvoiceMissingFields(inv) : [];
-    const hasMissingDetails = missingFields.length > 0;
     const dupMeta = duplicateAnalysis[inv.id];
+    const summary = getInvoiceValidationSummary(inv, dupMeta);
 
     return (
       <div
         key={inv.id}
         id={`invoice-item-${inv.id}`}
         onClick={() => setSelectedInvoiceId(inv.id)}
-        className={`p-3.5 transition cursor-pointer flex items-start justify-between gap-3 ${
+        className={`group p-3 rounded-xl border transition cursor-pointer relative ${
           isSelected 
-            ? 'bg-slate-100/95 border-l-4 border-slate-800' 
-            : isAttentionSection 
-              ? 'bg-amber-50/40 hover:bg-amber-100/60 border-l-4 border-amber-400' 
-              : 'hover:bg-slate-50 border-l-4 border-transparent'
+            ? 'bg-indigo-50/80 border-indigo-300 shadow-2xs ring-1 ring-indigo-200' 
+            : 'bg-white hover:bg-gray-50 border-gray-200'
         }`}
       >
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap mb-1">
-            <span className="text-xs font-bold text-slate-800 truncate block max-w-[160px]">
-              {inv.supplierName || inv.fileName}
-            </span>
-            {inv.status === 'pending' && (
-              <span className="flex items-center gap-0.5 text-[10px] bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 rounded-full font-medium">
-                <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                Analyzing
-              </span>
-            )}
-            {inv.status === 'success' && !hasMissingDetails && !dupMeta?.isDuplicate && (
-              <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.5 rounded-full font-medium">
-                Ready
-              </span>
-            )}
-            {dupMeta?.isDuplicate && (
-              <span 
-                className="flex items-center gap-0.5 text-[10px] bg-red-600 text-white border border-red-700 px-1.5 py-0.5 rounded-full font-bold"
-                title={`Duplicate document detected by: ${dupMeta.reason}`}
-              >
-                <AlertTriangle className="w-2.5 h-2.5 text-white animate-bounce" style={{ animationDuration: '3s' }} />
-                Duplicate
-              </span>
-            )}
-            {inv.status === 'success' && hasMissingDetails && (
-              <span 
-                className="flex items-center gap-0.5 text-[10px] bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded-full font-bold"
-                title={`Missing mandatory fields: ${missingFields.join(', ')}`}
-              >
-                <AlertCircle className="w-2.5 h-2.5 text-amber-700" />
-                Missing Info
-              </span>
-            )}
-            {inv.status === 'error' && (
-              <span className="text-[10px] bg-red-50 text-red-700 border border-red-100 px-1.5 py-0.5 rounded-full font-medium">
-                Failed
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3 text-[11px] text-slate-500 font-mono">
-            <span>#{inv.invoiceNumber || 'No Number'}</span>
-            <span>•</span>
-            <span>{inv.invoiceDate || 'No Date'}</span>
-          </div>
-
-          {/* Issue summary details for attention section */}
-          {isAttentionSection && (
-            <div className="mt-2 text-[11px] rounded p-2 bg-white/80 border border-amber-200/80 shadow-2xs space-y-1">
-              {dupMeta?.isDuplicate && (
-                <p className="flex items-center gap-1 font-bold text-red-700">
-                  <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
-                  Duplicate document ({dupMeta.reason})
-                </p>
-              )}
-              {hasMissingDetails && (
-                <p className="flex items-start gap-1 font-semibold text-amber-900">
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                  <span>
-                    <strong className="text-amber-950 font-bold">Missing:</strong> {missingFields.join(', ')}
-                  </span>
-                </p>
-              )}
-              {inv.status === 'error' && (
-                <div className="space-y-1.5 pt-1">
-                  <p className="flex items-start gap-1 text-red-700 font-semibold text-[11px] leading-tight">
-                    <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
-                    <span>{inv.errorMessage || 'Extraction error'}</span>
-                  </p>
-                  <div className="flex items-center gap-1.5 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRetryExtraction(inv.id);
-                      }}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-900 text-white text-[10px] font-bold rounded flex items-center gap-1 transition cursor-pointer"
-                      title="Retry AI extraction for this invoice"
-                    >
-                      <RefreshCw className="w-3 h-3 text-emerald-400" />
-                      Retry
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleConvertErrorToDraft(inv.id);
-                      }}
-                      className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded flex items-center gap-1 transition cursor-pointer"
-                      title="Enter details manually alongside the document preview"
-                    >
-                      <Plus className="w-3 h-3" />
-                      Fill Manually
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {inv.status === 'success' && !isAttentionSection && (
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700">
-                Total: {inv.currency} {inv.finalAmountPayable.toFixed(2)}
-              </span>
-              {inv.outstandingBalance > 0 ? (
-                <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded">
-                  Bal: ${inv.outstandingBalance.toFixed(2)}
-                </span>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 font-bold text-xs ${
+              inv.status === 'pending'
+                ? 'bg-amber-100 text-amber-700'
+                : summary.status === 'extraction_failed'
+                  ? 'bg-rose-100 text-rose-700'
+                  : summary.status === 'auto_validated'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : summary.status === 'human_verified'
+                      ? 'bg-indigo-100 text-indigo-800'
+                      : 'bg-amber-100 text-amber-800'
+            }`}>
+              {inv.status === 'pending' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : summary.status === 'extraction_failed' ? (
+                <AlertCircle className="w-4 h-4" />
+              ) : summary.status === 'auto_validated' ? (
+                <FileCheck className="w-4 h-4 text-emerald-700" />
+              ) : summary.status === 'human_verified' ? (
+                <CheckCircle2 className="w-4 h-4 text-indigo-700" />
               ) : (
-                <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded">
-                  Paid
-                </span>
+                <AlertTriangle className="w-4 h-4 text-amber-700" />
               )}
             </div>
-          )}
-        </div>
 
-        <div className="flex items-center gap-1 self-center">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelectedInvoiceId(inv.id);
-              setActiveTab('preview');
-            }}
-            className="text-slate-500 hover:text-emerald-600 p-1.5 hover:bg-emerald-50 rounded transition flex items-center gap-1 text-[11px] font-bold border border-slate-200 hover:border-emerald-200"
-            title="Preview invoice document next to ledger"
-          >
-            <Eye className="w-3.5 h-3.5 text-emerald-600" />
-            <span className="hidden sm:inline text-slate-700 hover:text-emerald-700">Preview</span>
-          </button>
+            <div className="min-w-0">
+              <h4 className="font-bold text-xs text-gray-900 truncate">
+                {inv.supplierName || inv.fileName}
+              </h4>
+              <p className="text-[11px] text-gray-500 truncate font-mono mt-0.5">
+                {inv.invoiceNumber ? `#${inv.invoiceNumber}` : inv.fileName}
+              </p>
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={(e) => handleDeleteInvoice(inv.id, e)}
-            className="text-slate-400 hover:text-red-500 p-1.5 hover:bg-slate-200/50 rounded transition"
-            title="Remove invoice"
+            className="text-gray-300 hover:text-rose-600 p-1 rounded hover:bg-rose-50 transition opacity-0 group-hover:opacity-100 cursor-pointer"
+            title="Delete invoice entry"
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
+        </div>
+
+        {/* Status badges */}
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+          {inv.status === 'pending' && (
+            <span className="bg-amber-50 text-amber-800 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+              Analyzing Document...
+            </span>
+          )}
+
+          {summary.status === 'auto_validated' && (
+            <span className="bg-emerald-50 text-emerald-900 font-bold px-2 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+              <FileCheck className="w-3 h-3 text-emerald-600" />
+              Auto-Validated
+            </span>
+          )}
+
+          {summary.status === 'human_verified' && (
+            <span className="bg-indigo-50 text-indigo-900 font-bold px-2 py-0.5 rounded-full border border-indigo-200 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3 text-indigo-600" />
+              Human-Verified
+            </span>
+          )}
+
+          {summary.status === 'needs_review' && (
+            <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 text-amber-600" />
+              Needs Review
+            </span>
+          )}
+
+          {summary.status === 'duplicate' && (
+            <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 text-amber-600" />
+              Duplicate
+            </span>
+          )}
+
+          {summary.status === 'extraction_failed' && (
+            <span className="bg-rose-50 text-rose-800 font-bold px-2 py-0.5 rounded-full border border-rose-200">
+              Extraction Failed
+            </span>
+          )}
+
+          <span className="ml-auto font-mono font-bold text-gray-800 text-xs">
+            {inv.currency ? `${inv.currency} ` : ''}${inv.finalAmountPayable ? inv.finalAmountPayable.toFixed(2) : '0.00'}
+          </span>
         </div>
       </div>
     );
   };
 
   return (
-    <div id="applet-root" className="min-h-screen bg-slate-50 font-sans text-slate-800 antialiased flex flex-col">
-      {/* Top Professional Header Banner */}
-      <header id="applet-header" className="bg-slate-900 text-white border-b border-slate-800 py-4 px-6 shadow-md flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="bg-slate-800 p-2.5 rounded-lg border border-slate-700 text-emerald-400">
-            <FileSpreadsheet className="w-6 h-6" />
+    <div className="min-h-screen bg-gray-50/50 text-gray-900 flex flex-col font-sans antialiased">
+      {/* 1. Header Navigation */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-30 shadow-xs">
+        <div className="max-w-7xl mx-auto px-4 md:px-8 h-16 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="bg-indigo-600 text-white p-2.5 rounded-xl shadow-sm flex items-center justify-center shrink-0">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="font-extrabold text-base tracking-tight text-gray-900">
+                Invoice Extraction Register
+              </h1>
+              <p className="text-[10px] font-mono font-bold tracking-wider text-gray-500 uppercase">
+                AP DOCUMENT INTAKE SYSTEM
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-              Invoice Extractor to Excel
-              <span className="text-[10px] bg-slate-800 border border-slate-700 text-slate-400 px-2 py-0.5 rounded-full font-mono uppercase">
-                AP Desk Assistant
-              </span>
-            </h1>
-            <p className="text-xs text-slate-400">
-              Accounts Payable hub for automated document extraction and structured spreadsheet mapping.
-            </p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-3 self-end sm:self-auto">
-          {cleanInvoices.length > 0 ? (
+          <div className="flex items-center gap-3">
+            <div className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-emerald-200/80 items-center gap-1.5 hidden sm:flex">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>SECURE SYSTEM</span>
+            </div>
+
             <button
-              id="btn-export-all-header"
+              type="button"
+              onClick={() => setShowHistoryModal(true)}
+              className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold px-3 py-1.5 rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <History className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Verified Ledger ({historicalRecords.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRunUnitTests}
+              className="bg-white border border-gray-200 hover:bg-gray-50 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer hidden md:flex"
+            >
+              <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Run 12 Tests</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleExportAll}
-              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-bold shadow-md transition-all hover:scale-[1.02] cursor-pointer"
-              title="Download all ready and verified invoices into a consolidated multi-sheet Excel workbook"
+              disabled={cleanInvoices.length === 0}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition flex items-center gap-2 cursor-pointer disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-200 disabled:shadow-none disabled:cursor-not-allowed"
             >
-              <Download className="w-4 h-4 animate-bounce" style={{ animationDuration: '2.5s' }} />
-              Download Verified Invoices ({cleanInvoices.length})
+              <Download className="w-4 h-4" />
+              <span>Download Excel ({cleanInvoices.length})</span>
             </button>
-          ) : (
-            <button
-              id="btn-export-all-header-disabled"
-              onClick={() => alert("No ready and verified invoices available to export. Invoices with missing fields or duplicate flags must be reviewed and completed before downloading.")}
-              className="flex items-center gap-1.5 px-4 py-2 bg-slate-800 text-slate-400 rounded-lg text-sm font-medium border border-slate-700 cursor-pointer"
-              title="No ready & verified invoices to export"
-            >
-              <Download className="w-4 h-4 text-slate-500" />
-              Download Verified Invoices (0)
-            </button>
-          )}
-
-          <button
-            id="btn-demo-data"
-            onClick={handleLoadDemos}
-            className="flex items-center gap-1.5 px-4 py-2 bg-slate-800 text-slate-300 hover:text-white rounded-lg border border-slate-700 text-sm font-medium transition shadow-sm hover:bg-slate-700 cursor-pointer"
-          >
-            <Sparkles className="w-4 h-4 text-emerald-400" />
-            Load Sample Invoices
-          </button>
-
-          <button
-            id="btn-add-manual"
-            onClick={handleAddManualInvoice}
-            className="flex items-center gap-1.5 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-700 text-sm font-medium transition shadow-sm cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Add Invoice Manually
-          </button>
+          </div>
         </div>
       </header>
 
-      {/* Main Aggregated Metrics Hub */}
-      <section id="metrics-bar" className="bg-white border-b border-slate-200 py-4 px-6 shadow-xs">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Top Row: Processed Invoices, Duplicates Detected, Missing Info */}
-          <div id="metric-processed-invoices" className="flex items-center gap-3.5 p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
-            <div className="p-2.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 shrink-0">
-              <CheckCircle2 className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <div className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">Ready &amp; Verified for Excel</div>
-              <div className="text-xl font-bold text-emerald-700 mt-0.5">{cleanInvoices.length} <span className="text-xs font-normal text-slate-500">/ {invoices.length} total</span></div>
-            </div>
-          </div>
-
-          <div id="metric-duplicates-detected" className={`flex items-center gap-3.5 p-3.5 rounded-xl border transition-colors ${
-            duplicateCount > 0 ? 'border-red-200 bg-red-50/40' : 'border-slate-200 bg-slate-50/50'
-          }`}>
-            <div className={`p-2.5 rounded-full shrink-0 ${
-              duplicateCount > 0 ? 'bg-red-100 text-red-600 border border-red-200' : 'bg-slate-100 text-slate-400 border border-slate-200'
-            }`}>
-              <AlertTriangle className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <div className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">Duplicates Detected</div>
-              <div className={`text-xl font-bold mt-0.5 ${duplicateCount > 0 ? 'text-red-600' : 'text-slate-700'}`}>
-                {duplicateCount} {duplicateCount === 1 ? 'Invoice' : 'Invoices'}
+      {/* Main Body Layout */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-8 space-y-6">
+        
+        {/* 2. Step Progress Tracker */}
+        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-2xs">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative">
+            {/* Step 1 */}
+            <div className="flex items-center gap-3">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all shrink-0 ${
+                step1Completed ? 'bg-indigo-600 text-white' : 'bg-indigo-600 text-white ring-4 ring-indigo-100'
+              }`}>
+                {step1Completed ? <Check className="w-4 h-4" /> : '1'}
+              </div>
+              <div>
+                <p className={`text-xs font-bold ${step1Active || step1Completed ? 'text-gray-900' : 'text-gray-400'}`}>
+                  1. Upload Invoices
+                </p>
+                <p className="text-[10px] text-gray-500">Drop or select supplier invoices</p>
               </div>
             </div>
-          </div>
 
-          <div id="metric-missing-info" className={`flex items-center gap-3.5 p-3.5 rounded-xl border transition-colors ${
-            missingInfoCount > 0 ? 'border-amber-200 bg-amber-50/40' : 'border-slate-200 bg-slate-50/50'
-          }`}>
-            <div className={`p-2.5 rounded-full shrink-0 ${
-              missingInfoCount > 0 ? 'bg-amber-100 text-amber-600 border border-amber-200' : 'bg-slate-100 text-slate-400 border border-slate-200'
-            }`}>
-              <AlertCircle className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <div className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">Missing Info</div>
-              <div className={`text-xl font-bold mt-0.5 ${missingInfoCount > 0 ? 'text-amber-600' : 'text-slate-700'}`}>
-                {missingInfoCount} {missingInfoCount === 1 ? 'Invoice' : 'Invoices'}
+            {/* Step 2 */}
+            <div className="flex items-center gap-3">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all shrink-0 ${
+                step2Completed ? 'bg-indigo-600 text-white' : step2Active ? 'bg-indigo-600 text-white ring-4 ring-indigo-100' : 'bg-gray-100 text-gray-400'
+              }`}>
+                {step2Completed ? <Check className="w-4 h-4" /> : '2'}
+              </div>
+              <div>
+                <p className={`text-xs font-bold ${step2Active || step2Completed ? 'text-gray-900' : 'text-gray-400'}`}>
+                  2. Validate &amp; Review
+                </p>
+                <p className="text-[10px] text-gray-500">Resolve exceptions &amp; fields</p>
               </div>
             </div>
-          </div>
 
-          {/* Bottom Row: Total Invoiced AP, Total Amount Paid, Net AP Outstanding */}
-          <div id="metric-total-invoiced" className="flex items-center gap-3.5 p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
-            <div className="p-2.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
-              <Coins className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <div className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">Total Invoiced AP</div>
-              <div className="text-xl font-bold text-slate-800 mt-0.5">
-                ${stats.totalInvoiced.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {/* Step 3 */}
+            <div className="flex items-center gap-3">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all shrink-0 ${
+                step3Active ? 'bg-indigo-600 text-white ring-4 ring-indigo-100' : 'bg-gray-100 text-gray-400'
+              }`}>
+                <Check className="w-4 h-4" />
               </div>
-            </div>
-          </div>
-
-          <div id="metric-total-paid" className="flex items-center gap-3.5 p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
-            <div className="p-2.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 shrink-0">
-              <CreditCard className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <div className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">Total Amount Paid</div>
-              <div className="text-xl font-bold text-slate-800 mt-0.5">
-                ${stats.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
-          </div>
-
-          <div id="metric-net-outstanding" className="flex items-center gap-3.5 p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
-            <div className="p-2.5 rounded-full bg-amber-50 text-amber-600 border border-amber-100 shrink-0">
-              <DollarSign className="w-5.5 h-5.5" />
-            </div>
-            <div>
-              <div className="text-[11px] uppercase font-semibold text-slate-400 tracking-wider">Net AP Outstanding</div>
-              <div className="text-xl font-bold text-amber-700 mt-0.5">
-                ${stats.totalOutstanding.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <div>
+                <p className={`text-xs font-bold ${step3Active ? 'text-gray-900' : 'text-gray-400'}`}>
+                  3. Export Register
+                </p>
+                <p className="text-[10px] text-gray-500">Ready for Three-Way Match</p>
               </div>
             </div>
           </div>
         </div>
-      </section>
 
-      {/* Main Grid Content Area */}
-      <main id="main-content-layout" className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-[1700px] w-full mx-auto">
-        
-        {/* Left Hand: Upload Area and Invoice Queue Panel */}
-        <div id="left-pane" className="lg:col-span-4 flex flex-col gap-6">
-          
-          {/* File Upload Target Component */}
-          <div 
-            id="dropzone"
+        {/* 3. Dashboard Metric Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Total Invoices</p>
+            <p className="text-2xl font-extrabold text-gray-900 mt-1">{totalCount}</p>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1">
+              <FileCheck className="w-3 h-3 text-emerald-600" />
+              Auto-Validated
+            </p>
+            <p className="text-2xl font-extrabold text-emerald-700 mt-1">{autoValidatedCount}</p>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3 text-indigo-600" />
+              Human-Verified
+            </p>
+            <p className="text-2xl font-extrabold text-indigo-700 mt-1">{humanVerifiedCount}</p>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 text-amber-600" />
+              Review Required
+            </p>
+            <p className="text-2xl font-extrabold text-amber-700 mt-1">{reviewRequiredCount}</p>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider flex items-center gap-1">
+              <Layers className="w-3 h-3 text-amber-600" />
+              Duplicates
+            </p>
+            <p className="text-2xl font-extrabold text-amber-800 mt-1">{duplicatesCount}</p>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-rose-700 uppercase tracking-wider flex items-center gap-1">
+              <AlertCircle className="w-3 h-3 text-rose-600" />
+              Extraction Failed
+            </p>
+            <p className="text-2xl font-extrabold text-rose-700 mt-1">{failedCount}</p>
+          </div>
+        </div>
+
+        {/* 4. Main Section Card */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-6">
+          {/* Header Bar inside Section Card */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="bg-indigo-50 text-indigo-600 p-2.5 rounded-xl shrink-0">
+                <FileSearch className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="font-bold text-base text-gray-900">
+                  Invoice Extraction Review
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Upload supplier invoices, review validation exceptions and prepare reliable invoice data for three-way matching.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {invoices.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowClearConfirmModal(true)}
+                  className="bg-white border border-rose-200 hover:bg-rose-50 text-rose-700 text-xs font-semibold px-3 py-2 rounded-lg transition shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                  title="Clear all invoices"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Clear All</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleAddManualInvoice}
+                className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold px-3.5 py-2 rounded-lg transition shadow-2xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                <span>+ Manual Invoice</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleLoadDemos}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3.5 py-2 rounded-lg shadow-sm transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-indigo-200" />
+                <span>Load Sample Batch</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Active Batch Banner */}
+          {invoices.length > 0 && (
+            <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-3.5 text-xs flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 font-bold text-indigo-950">
+                <Sparkles className="w-4 h-4 text-indigo-600" />
+                <span>Active Invoice Batch</span>
+              </div>
+              <div className="flex items-center gap-4 text-xs font-medium text-indigo-900">
+                <span>Total Documents: <strong className="font-bold">{invoices.length}</strong></span>
+                {pendingCount > 0 && <span>Processing: <strong className="font-bold text-amber-700">{pendingCount}</strong></span>}
+                <span>Requiring Review: <strong className="font-bold text-amber-700">{attentionInvoices.length}</strong></span>
+                <span>Ready for Export: <strong className="font-bold text-emerald-700">{cleanInvoices.length}</strong></span>
+              </div>
+            </div>
+          )}
+
+          {/* Drag & Drop Upload Zone */}
+          <div
             onDragEnter={handleDrag}
             onDragOver={handleDrag}
             onDragLeave={handleDrag}
             onDrop={handleDrop}
             onClick={triggerFileSelect}
-            className={`border-2 border-dashed rounded-xl p-6 text-center transition cursor-pointer flex flex-col items-center justify-center min-h-[180px] bg-white hover:border-emerald-500 hover:bg-emerald-50/10 ${
-              dragActive ? 'border-emerald-500 bg-emerald-50/30 scale-[0.98]' : 'border-slate-300 bg-white'
+            className={`border-2 border-dashed rounded-xl p-8 text-center transition cursor-pointer relative ${
+              dragActive 
+                ? 'border-indigo-500 bg-indigo-50/20' 
+                : 'border-gray-200 hover:border-indigo-300 hover:bg-gray-50/80 bg-white'
             }`}
           >
-            <input 
-              type="file" 
+            <input
               ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
               onChange={handleFileSelect}
-              multiple 
-              accept="application/pdf,image/png,image/jpeg"
               className="hidden"
             />
-            
-            <div className="bg-slate-100 text-slate-600 p-3 rounded-full mb-3.5 border border-slate-200">
-              {isUploading ? (
-                <Loader2 className="w-7 h-7 animate-spin text-emerald-600" />
-              ) : (
-                <Upload className="w-7 h-7 text-slate-600" />
-              )}
-            </div>
-            
-            <h3 className="font-semibold text-slate-700 text-sm">
-              {isUploading ? "Uploading & Extracting..." : "Drag & Drop Invoice Files Here"}
-            </h3>
-            <p className="text-xs text-slate-500 mt-1.5 max-w-[260px] mx-auto">
-              Supports <strong className="text-slate-700">PDF, JPEG, and PNG</strong> formats. Multiple files accepted.
-            </p>
-            <button 
-              type="button"
-              className="mt-4 px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-semibold rounded-lg transition"
-            >
-              Browse Files
-            </button>
-          </div>
 
-          {/* Invoices List / Queue */}
-          <div id="invoice-queue" className="bg-white border border-slate-200 rounded-xl shadow-sm flex flex-col flex-1 min-h-[350px]">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 rounded-t-xl">
-              <h2 className="font-bold text-slate-800 text-sm flex items-center gap-2 flex-wrap">
-                AP Invoice Ledger
-                <span className="text-[11px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full font-mono">
-                  {invoices.length}
-                </span>
-                <span 
-                  className={`inline-flex items-center gap-1 text-[10px] font-bold border px-2 py-0.5 rounded-full ${
-                    duplicateCount > 0 
-                      ? 'bg-red-100 text-red-900 border-red-300' 
-                      : 'bg-slate-100 text-slate-600 border-slate-200'
-                  }`} 
-                  title={`${duplicateCount} duplicate document(s) detected`}
-                >
-                  <AlertTriangle className={`w-3 h-3 shrink-0 ${duplicateCount > 0 ? 'text-red-600' : 'text-slate-400'}`} />
-                  {duplicateCount} Duplicate{duplicateCount === 1 ? '' : 's'}
-                </span>
-                <span 
-                  className={`inline-flex items-center gap-1 text-[10px] font-bold border px-2 py-0.5 rounded-full ${
-                    missingInfoCount > 0 
-                      ? 'bg-amber-100 text-amber-900 border-amber-300' 
-                      : 'bg-slate-100 text-slate-600 border-slate-200'
-                  }`} 
-                  title={`${missingInfoCount} invoice(s) with missing required info`}
-                >
-                  <AlertCircle className={`w-3 h-3 shrink-0 ${missingInfoCount > 0 ? 'text-amber-600' : 'text-slate-400'}`} />
-                  {missingInfoCount} Missing Info
-                </span>
-              </h2>
-              <button
-                id="btn-export-all"
-                onClick={handleExportAll}
-                className={`text-xs font-bold flex items-center gap-1 border px-2.5 py-1 rounded transition cursor-pointer ${
-                  cleanInvoices.length > 0
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
-                    : 'bg-slate-100 text-slate-400 border-slate-200'
-                }`}
-                title="Export only ready & verified invoices to Excel"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Excel Export ({cleanInvoices.length})
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto max-h-[580px]">
-              {invoices.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center p-8 text-center text-slate-400">
-                  <FileText className="w-10 h-10 stroke-1 mb-2.5 text-slate-300" />
-                  <p className="text-xs font-medium">No invoices loaded yet.</p>
-                  <p className="text-[11px] text-slate-400 mt-1 max-w-[200px]">
-                    Upload a local hardware supplier invoice file, or inject sample data above.
-                  </p>
-                </div>
-              ) : (
-                <div>
-                  {/* SECTION 1: INVOICES THAT NEED ATTENTION */}
-                  <div id="section-invoices-needing-attention" className="border-b border-slate-200">
-                    <div className="bg-amber-50/90 px-4 py-2.5 border-b border-amber-200 flex items-center justify-between sticky top-0 z-10 shadow-2xs">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                        <span className="text-xs font-bold text-amber-950 tracking-wide uppercase">
-                          Invoices that need attention
-                        </span>
-                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                          attentionInvoices.length > 0 ? 'bg-amber-200 text-amber-900 border border-amber-300' : 'bg-slate-200 text-slate-600'
-                        }`}>
-                          {attentionInvoices.length}
-                        </span>
-                      </div>
-                      {attentionInvoices.length === 0 && (
-                        <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          No issues detected
-                        </span>
-                      )}
-                    </div>
-
-                    {attentionInvoices.length > 0 ? (
-                      <div className="divide-y divide-amber-100/80 bg-amber-50/20">
-                        {attentionInvoices.map(inv => renderInvoiceItem(inv, true))}
-                      </div>
-                    ) : (
-                      <div className="p-3 text-center text-[11px] text-slate-400 bg-slate-50/30 italic">
-                        All invoices have complete details with no duplicates.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* SECTION 2: READY & VERIFIED INVOICES */}
-                  <div id="section-verified-invoices">
-                    <div className="bg-slate-100/90 px-4 py-2 border-b border-slate-200 flex items-center justify-between sticky top-0 z-10 shadow-2xs">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span className="text-xs font-bold text-slate-700 tracking-wide uppercase">
-                          Ready & Verified Invoices
-                        </span>
-                        <span className="text-[11px] bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full font-mono">
-                          {cleanInvoices.length}
-                        </span>
-                      </div>
-                    </div>
-
-                    {cleanInvoices.length > 0 ? (
-                      <div className="divide-y divide-slate-100">
-                        {cleanInvoices.map(inv => renderInvoiceItem(inv, false))}
-                      </div>
-                    ) : (
-                      <div className="p-4 text-center text-xs text-slate-400 italic">
-                        No verified complete invoices in queue.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Right Hand: Interactive Detail Review Workspace */}
-        <div id="right-pane" className="lg:col-span-8 flex flex-col bg-white border border-slate-200 rounded-xl shadow-sm min-h-[500px]">
-          
-          {selectedInvoice ? (
-            <div className="flex flex-col h-full">
-              
-              {/* Workspace Header Panel */}
-              <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/50 rounded-t-xl">
-                <div>
-                  <h2 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                    Review extracted: {selectedInvoice.supplierName || selectedInvoice.fileName}
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
-                    <FileText className="w-3.5 h-3.5 text-slate-400" />
-                    Source document: {selectedInvoice.fileName}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
-                  <div className="flex items-center gap-1 bg-slate-200/80 p-0.5 rounded-lg border border-slate-300 mr-1">
-                    <button
-                      type="button"
-                      onClick={() => setViewLayout('tabbed')}
-                      className={`px-2.5 py-1.5 rounded text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                        viewLayout === 'tabbed' 
-                          ? 'bg-white text-slate-800 shadow-xs' 
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                      title="Tabs View Mode"
-                    >
-                      <LayoutList className="w-3.5 h-3.5" />
-                      <span className="hidden md:inline">Tabs View</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setViewLayout('split');
-                        if (activeTab === 'preview') setActiveTab('supplier');
-                      }}
-                      className={`px-2.5 py-1.5 rounded text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                        viewLayout === 'split' 
-                          ? 'bg-slate-800 text-white shadow-xs' 
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                      title="Side-by-Side Split View with live document preview"
-                    >
-                      <Columns className="w-3.5 h-3.5" />
-                      <span className="hidden md:inline">Side-by-Side Split</span>
-                    </button>
-                  </div>
-
-                  {selectedInvoice.status === 'success' && (
-                    <button
-                      id="btn-export-selected"
-                      onClick={handleExportSelected}
-                      className={`flex items-center gap-1 text-xs font-bold px-3 py-2 rounded-lg border shadow-xs transition cursor-pointer ${
-                        cleanInvoices.some(inv => inv.id === selectedInvoice.id)
-                          ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-800'
-                          : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
-                      }`}
-                      title={cleanInvoices.some(inv => inv.id === selectedInvoice.id) ? "Download this verified invoice as an Excel spreadsheet" : "This invoice has missing details or duplicate flags"}
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      {cleanInvoices.some(inv => inv.id === selectedInvoice.id) ? "Download Excel" : "Export Invoice"}
-                    </button>
-                  )}
-                  <button
-                    id="btn-export-all-review-header"
-                    onClick={handleExportAll}
-                    className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg shadow-xs transition hover:scale-[1.02] cursor-pointer"
-                    title="Download all ready and verified invoices into Excel"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    Export Verified ({cleanInvoices.length})
-                  </button>
-                </div>
+            <div className="flex flex-col items-center justify-center">
+              <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mb-3 shadow-2xs">
+                <Upload className="w-6 h-6" />
               </div>
-
-              {/* Extraction Error Banner if Status is Error */}
-              {selectedInvoice.status === 'error' && (
-                <div className="bg-red-50/90 border border-red-200 border-l-4 border-l-red-500 p-4 m-4 mb-0 rounded-r-xl shadow-xs">
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                    <div className="flex gap-3">
-                      <AlertTriangle className="w-5.5 h-5.5 text-red-600 shrink-0 mt-0.5" />
-                      <div>
-                        <h3 className="font-bold text-red-950 text-sm flex items-center gap-2">
-                          AI Document Extraction Unsuccessful
-                          <span className="text-[10px] bg-red-200 text-red-900 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
-                            Rate Limit / Quota
-                          </span>
-                        </h3>
-                        <p className="text-xs text-red-800 mt-1 leading-relaxed">
-                          {selectedInvoice.errorMessage || "The Gemini AI service is currently rate limited or temporarily busy."}
-                        </p>
-                        <p className="text-[11px] text-red-700 mt-1.5 font-medium">
-                          You can click <strong>Retry Extraction</strong> to re-run AI parsing, or click <strong>Enter Details Manually</strong> to edit fields and line items directly beside the document preview.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
-                      <button
-                        type="button"
-                        onClick={() => handleRetryExtraction(selectedInvoice.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg shadow-xs transition cursor-pointer"
-                      >
-                        <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                        Retry Extraction
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleConvertErrorToDraft(selectedInvoice.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-xs transition cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Enter Details Manually
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Workspace Navigation Tabs */}
-              <div className="flex border-b border-slate-200 bg-slate-50/50 text-xs overflow-x-auto">
-                <button
-                  id="tab-preview"
-                  onClick={() => {
-                    setActiveTab('preview');
-                    if (viewLayout === 'split') setViewLayout('tabbed');
-                  }}
-                  className={`flex-1 min-w-[125px] py-3 px-3 text-center font-bold border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                    activeTab === 'preview' && viewLayout === 'tabbed'
-                      ? 'border-emerald-600 text-emerald-800 bg-emerald-50/70 font-extrabold shadow-2xs' 
-                      : 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Eye className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Document Preview</span>
-                </button>
-
-                <button
-                  id="tab-supplier"
-                  onClick={() => setActiveTab('supplier')}
-                  className={`flex-1 min-w-[125px] py-3 px-3 text-center font-bold border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                    activeTab === 'supplier' 
-                      ? 'border-slate-800 text-slate-800 bg-white shadow-2xs font-bold' 
-                      : 'border-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Building2 className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                  <span>Supplier Profile</span>
-                </button>
-
-                <button
-                  id="tab-metadata"
-                  onClick={() => setActiveTab('metadata')}
-                  className={`flex-1 min-w-[125px] py-3 px-3 text-center font-bold border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                    activeTab === 'metadata' 
-                      ? 'border-slate-800 text-slate-800 bg-white shadow-2xs font-bold' 
-                      : 'border-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Calendar className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                  <span>Invoice Metadata</span>
-                </button>
-
-                <button
-                  id="tab-banking"
-                  onClick={() => setActiveTab('banking')}
-                  className={`flex-1 min-w-[125px] py-3 px-3 text-center font-bold border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                    activeTab === 'banking' 
-                      ? 'border-slate-800 text-slate-800 bg-white shadow-2xs font-bold' 
-                      : 'border-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <CreditCard className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                  <span>Banking &amp; Terms</span>
-                </button>
-
-                <button
-                  id="tab-totals"
-                  onClick={() => setActiveTab('totals')}
-                  className={`flex-1 min-w-[125px] py-3 px-3 text-center font-bold border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                    activeTab === 'totals' 
-                      ? 'border-slate-800 text-slate-800 bg-white shadow-2xs font-bold' 
-                      : 'border-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <DollarSign className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                  <span>Financial Totals</span>
-                </button>
-              </div>
-
-              {/* Inner Workspace Forms / Document Preview Panel */}
-              {viewLayout === 'split' ? (
-                <div className="flex-1 grid grid-cols-1 xl:grid-cols-12 overflow-hidden border-t border-slate-100">
-                  <div className="xl:col-span-6 p-6 overflow-y-auto max-h-[680px] border-b xl:border-b-0 xl:border-r border-slate-200">
-                    {renderFormContent(activeTab === 'preview' ? 'supplier' : activeTab)}
-                  </div>
-                  <div className="xl:col-span-6 p-4 bg-slate-900/95 overflow-y-auto max-h-[680px]">
-                    <InvoiceDocumentPreview 
-                      invoice={selectedInvoice} 
-                      duplicateInfo={duplicateAnalysis[selectedInvoice.id]} 
-                    />
-                  </div>
-                </div>
-              ) : activeTab === 'preview' ? (
-                <div className="p-5 flex-1 overflow-y-auto max-h-[680px] bg-slate-900/95">
-                  <InvoiceDocumentPreview 
-                    invoice={selectedInvoice} 
-                    duplicateInfo={duplicateAnalysis[selectedInvoice.id]} 
-                  />
-                </div>
-              ) : (
-                <div className="p-6 flex-1 overflow-y-auto max-h-[680px]">
-                  {renderFormContent(activeTab)}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div id="workspace-fallback" className="flex-1 flex flex-col items-center justify-center p-12 text-center text-slate-400">
-              <div className="bg-slate-100 p-4 rounded-full border border-slate-200 mb-4 text-slate-400">
-                <FileSpreadsheet className="w-12 h-12 stroke-1" />
-              </div>
-              <h3 className="text-lg font-bold text-slate-700">Accounts Payable AP Dashboard</h3>
-              <p className="text-sm text-slate-500 mt-2 max-w-md mx-auto">
-                No active invoice loaded. Drag-and-drop your hardware supplier invoices on the left panel, or trigger the pre-configured sample database to explore spreadsheet organization.
+              <p className="font-bold text-sm text-gray-900">
+                Select or Drop Supplier Invoices Here
               </p>
+              <p className="text-xs text-gray-500 mt-1">
+                Supports PDF, JPEG and PNG invoice documents. (Max 20MB per file)
+              </p>
+            </div>
+          </div>
 
-              {/* Little helpful summary box in vacant workspace */}
-              <div className="mt-8 p-4 bg-slate-50 border border-slate-200 rounded-lg text-left max-w-lg w-full">
-                <h4 className="text-xs font-bold uppercase text-slate-600 tracking-wider mb-2 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5 text-slate-500" />
-                  Excel Workbook Categorization Columns
-                </h4>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Upon uploading an invoice, Gemini automatically extracts and maps metadata into separated worksheets:
+          {/* Main Grid: Queue on Left, Workspace on Right */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-2">
+            
+            {/* Document Queue Sidebar */}
+            <div className="lg:col-span-4 space-y-4">
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                  <h3 className="font-bold text-gray-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-4 h-4 text-indigo-600" />
+                    Document Queue ({invoices.length})
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    {invoices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowClearConfirmModal(true)}
+                        className="text-[11px] text-rose-600 hover:text-rose-800 hover:bg-rose-50 px-1.5 py-0.5 rounded font-semibold flex items-center gap-1 transition cursor-pointer"
+                        title="Clear all invoices"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Clear All
+                      </button>
+                    )}
+                    <span className="text-[11px] text-gray-500 font-mono font-semibold">
+                      {cleanInvoices.length} Ready
+                    </span>
+                  </div>
+                </div>
+
+                {invoices.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center p-8 text-gray-400">
+                    <FileSearch className="w-10 h-10 text-gray-300 mb-2" />
+                    <p className="text-xs font-semibold text-gray-600">No invoices loaded yet</p>
+                    <p className="text-[11px] text-gray-400 mt-1 max-w-[200px]">
+                      Upload supplier PDFs or click "Load Sample Batch" to begin extraction.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
+                    {/* Needs Attention / Human Review Section */}
+                    {attentionInvoices.length > 0 && (
+                      <div>
+                        <h4 className="text-[11px] font-bold text-amber-800 uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                          Needs Human Review ({attentionInvoices.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {attentionInvoices.map(inv => renderInvoiceItem(inv, true))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Ready for Matching Section */}
+                    {cleanInvoices.length > 0 && (
+                      <div>
+                        <h4 className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          Ready for Three-Way Match ({cleanInvoices.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {cleanInvoices.map(inv => renderInvoiceItem(inv, false))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Workflow Policy Box */}
+              <div className="bg-gray-900 text-white p-4 rounded-xl text-xs space-y-1.5 shadow-xs border border-gray-800">
+                <div className="flex items-center gap-1.5 font-bold text-indigo-300">
+                  <Info className="w-4 h-4 shrink-0 text-indigo-400" />
+                  <span>Exception-Based AP Review</span>
+                </div>
+                <p className="text-[11px] text-gray-300 leading-relaxed">
+                  Routine invoices with no missing fields, math errors, or duplicate flags proceed automatically to three-way matching. Madam Lim reviews only invoices containing exceptions.
                 </p>
-                <ul className="text-[10px] text-slate-500 mt-2.5 list-disc pl-4 space-y-1">
-                  <li><strong>Worksheet 1 (Summaries)</strong>: Tracks supplier data, business registry tax IDs, bank accounts, subtotal, discount, shipping, tax rates, total balance, payment terms, and late charges.</li>
-                  <li><strong>Worksheet 2 (Granular Items)</strong>: Detailed descriptions, quantities, unit prices, specific item discounts, tax rate calculations, and final ledger amounts for audits.</li>
-                </ul>
               </div>
             </div>
-          )}
 
+            {/* Right Column: Invoice Workspace */}
+            <div className="lg:col-span-8 flex flex-col">
+              {!selectedInvoice ? (
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center text-gray-400 flex flex-col items-center justify-center min-h-[500px]">
+                  <FileSpreadsheet className="w-16 h-16 text-gray-200 mb-3" />
+                  <h3 className="font-bold text-gray-700 text-sm">Select an invoice from the queue</h3>
+                  <p className="text-xs text-gray-400 mt-1 max-w-sm">
+                    Choose an item on the left to inspect original PDF documents, review extracted field data, and verify accounts payable entries.
+                  </p>
+                </div>
+              ) : selectedInvoice.status === 'error' ? (
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8">
+                  <div className="bg-rose-50 border border-rose-200 p-4 rounded-xl flex items-start gap-3 mb-6">
+                    <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="font-bold text-rose-900 text-sm">Extraction Error</h4>
+                      <p className="text-xs text-rose-700 mt-1">{selectedInvoice.errorMessage}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleConvertErrorToDraft(selectedInvoice.id)}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg transition cursor-pointer"
+                    >
+                      Enter Details Manually
+                    </button>
+                  </div>
+
+                  <div className="mt-6 border-t border-gray-200 pt-6 min-h-[400px]">
+                    <InvoiceDocumentPreview invoice={selectedInvoice} />
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col overflow-hidden">
+                  {/* Workspace Header Bar & Tabs */}
+                  <div className="bg-gray-50/80 px-5 py-3.5 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-extrabold text-sm text-gray-900 flex items-center gap-2">
+                        {selectedInvoice.supplierName || selectedInvoice.fileName}
+                        {selectedInvoice.invoiceNumber && (
+                          <span className="font-mono text-xs font-semibold text-gray-500">
+                            #{selectedInvoice.invoiceNumber}
+                          </span>
+                        )}
+                      </h2>
+                      <p className="text-[11px] text-gray-500 font-mono">
+                        File: {selectedInvoice.fileName}
+                      </p>
+                    </div>
+
+                    {/* Main View Tabs */}
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-gray-200 shadow-2xs text-xs overflow-x-auto">
+                      {[
+                        { id: 'preview', label: 'Document View', icon: Eye },
+                        { id: 'supplier', label: 'Supplier', icon: Building2 },
+                        { id: 'metadata', label: 'Invoice Details', icon: Calendar },
+                        { id: 'banking', label: 'Banking & Terms', icon: CreditCard },
+                        { id: 'totals', label: 'Totals', icon: Coins },
+                      ].map(tab => {
+                        const IconComp = tab.icon;
+                        const isActive = activeTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setActiveTab(tab.id as any)}
+                            className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                              isActive
+                                ? 'border-indigo-600 text-indigo-700 bg-indigo-50/50 font-bold border'
+                                : 'border-transparent text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+                            }`}
+                          >
+                            <IconComp className="w-3.5 h-3.5" />
+                            <span>{tab.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Prev / Next Quick Nav Controls */}
+                      <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5 shadow-2xs">
+                        <button
+                          type="button"
+                          onClick={handleGoPrevInvoice}
+                          disabled={!hasPrevInvoice}
+                          className="p-1.5 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+                          title="Previous Invoice"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="text-[11px] font-mono font-bold px-2 text-gray-600 border-x border-gray-100 min-w-[55px] text-center">
+                          {currentInvoiceIndex >= 0 ? currentInvoiceIndex + 1 : 0} / {invoices.length}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleGoNextInvoice}
+                          disabled={!hasNextInvoice}
+                          className="p-1.5 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+                          title="Next Invoice"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleExportSelected}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Export This Invoice</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Form & Tab Content */}
+                  <div className="p-5 sm:p-6 min-h-[500px]">
+                    {activeTab === 'preview' ? (
+                      <div className="space-y-6">
+                        <InvoiceDocumentPreview 
+                          invoice={selectedInvoice} 
+                          duplicateInfo={selectedDupDetails}
+                        />
+                        {renderFormContent('supplier')}
+                      </div>
+                    ) : (
+                      renderFormContent(activeTab)
+                    )}
+                  </div>
+
+                  {/* Review Navigation Footer */}
+                  <div className="bg-gray-50/90 border-t border-gray-200 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={handleGoPrevInvoice}
+                      disabled={!hasPrevInvoice}
+                      className="px-3.5 py-2 bg-white border border-gray-200 hover:bg-gray-100 text-gray-700 text-xs font-semibold rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <ChevronLeft className="w-4 h-4 text-gray-500" />
+                      <span>Previous Invoice</span>
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono font-medium text-gray-500 hidden sm:inline mr-2">
+                        Invoice {currentInvoiceIndex >= 0 ? currentInvoiceIndex + 1 : 0} of {invoices.length}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={handleGoNextInvoice}
+                        disabled={!hasNextInvoice}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <span>Next Invoice</span>
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </main>
 
-      {/* Footer copyright */}
-      <footer id="applet-footer" className="mt-auto bg-slate-900 border-t border-slate-800 text-slate-500 py-4 px-6 text-center text-xs">
-        <p>© 2026 Hardware Supplies &amp; AP Desk. Powered by server-side Gemini AI extraction and SheetJS.</p>
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 py-6 text-center text-[10px] font-mono font-semibold tracking-wider text-gray-500 uppercase mt-auto">
+        BOON HUAT HARDWARE &amp; SUPPLIES • ACCOUNTS PAYABLE INVOICE EXTRACTION SYSTEM
       </footer>
+
+      {/* Historical Ledger Modal */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full border border-gray-200 shadow-xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="bg-gray-50 text-gray-900 px-6 py-4 flex items-center justify-between border-b border-gray-200">
+              <div className="flex items-center gap-2">
+                <History className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-extrabold text-sm">Verified Invoice Ledger History</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                className="text-gray-400 hover:text-gray-700 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4">
+              <p className="text-xs text-gray-600">
+                This table contains all invoices previously verified and saved in local browser storage. Duplicate detection automatically checks against these records to prevent double-processing.
+              </p>
+
+              {historicalRecords.length === 0 ? (
+                <div className="p-8 text-center text-gray-400 border border-dashed border-gray-200 rounded-xl">
+                  No verified invoice history recorded yet.
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-gray-200 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-gray-50 text-gray-600 font-bold border-b border-gray-200">
+                      <tr>
+                        <th className="p-3">Verified Date</th>
+                        <th className="p-3">Invoice #</th>
+                        <th className="p-3">Supplier Name</th>
+                        <th className="p-3 text-right">Amount</th>
+                        <th className="p-3">Currency</th>
+                        <th className="p-3">File Name</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {historicalRecords.map(rec => (
+                        <tr key={rec.id} className="hover:bg-gray-50">
+                          <td className="p-3 text-gray-400 font-mono">{new Date(rec.verifiedAt).toLocaleDateString()}</td>
+                          <td className="p-3 font-bold font-mono text-gray-900">#{rec.invoiceNumber}</td>
+                          <td className="p-3 text-gray-800 font-medium">{rec.supplierName}</td>
+                          <td className="p-3 text-right font-mono font-bold text-gray-900">${rec.finalAmountPayable.toFixed(2)}</td>
+                          <td className="p-3 font-mono text-gray-600">{rec.currency}</td>
+                          <td className="p-3 text-gray-500 truncate max-w-[150px]">{rec.fileName}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-gray-50 px-6 py-3.5 border-t border-gray-200 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={handleClearHistory}
+                disabled={historicalRecords.length === 0}
+                className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold rounded-lg transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Clear History Ledger
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                className="px-4 py-1.5 bg-gray-900 hover:bg-gray-800 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
+              >
+                Close Window
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Invoices Confirmation Modal */}
+      {showClearConfirmModal && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-gray-200 shadow-xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base text-gray-900">Clear All Invoices?</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  This action will remove all {invoices.length} currently loaded invoice document(s) from your active workspace.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <span>Unsaved verification status or edits in the current queue will be lost.</span>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setShowClearConfirmModal(false)}
+                className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-lg transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmClearAll}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear Workspace Invoices ({invoices.length})</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Duplicate History Confirmation Modal */}
+      {showClearHistoryConfirmModal && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-gray-200 shadow-xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base text-gray-900">Clear Duplicate History?</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  This action will permanently erase all locally stored verified invoice records from browser key <code className="bg-gray-100 px-1 py-0.5 rounded text-[11px]">invoice_duplicate_history_v2</code>.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 text-xs text-indigo-900 space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <Info className="w-4 h-4 text-indigo-600 shrink-0" />
+                Storage Clearance Distinctions:
+              </p>
+              <ul className="list-disc pl-5 space-y-1 text-[11px] text-indigo-800">
+                <li><strong>Clear All Invoices:</strong> Clears visible working batch items in your active workspace queue.</li>
+                <li><strong>Clear Duplicate History:</strong> Erases saved historical records used for cross-batch duplicate detection.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setShowClearHistoryConfirmModal(false)}
+                className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-lg transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmClearHistory}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear Duplicate History</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 12 Duplicate Tests Results Modal */}
+      {testModalResults && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full border border-gray-200 shadow-xl overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="bg-gray-900 text-white px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-extrabold text-sm">12 Duplicate Detection Suite Verification</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTestModalResults(null)}
+                className="text-gray-400 hover:text-white transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-3">
+              <div className={`p-3.5 rounded-xl border flex items-center gap-3 ${
+                testModalResults.allPassed ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-rose-50 border-rose-300 text-rose-900'
+              }`}>
+                {testModalResults.allPassed ? (
+                  <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-6 h-6 text-rose-600 shrink-0" />
+                )}
+                <div>
+                  <h4 className="font-extrabold text-xs">
+                    {testModalResults.allPassed ? 'All 12 Mandatory Tests Passed Successfully!' : 'Some Duplicate Verification Tests Failed'}
+                  </h4>
+                  <p className="text-[11px] opacity-90 mt-0.5">
+                    {testModalResults.allPassed 
+                      ? 'Definitive duplicate detection logic verified against all required edge cases.'
+                      : 'Please review individual failing test cases below.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+                {testModalResults.results.map(t => (
+                  <div key={t.testNumber} className={`p-3 rounded-lg border text-xs flex items-start gap-2.5 ${
+                    t.passed ? 'bg-gray-50 border-gray-200 text-gray-800' : 'bg-rose-50 border-rose-200 text-rose-900'
+                  }`}>
+                    <span className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5 ${
+                      t.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                    }`}>
+                      {t.testNumber}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold">{t.description}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5 font-mono">{t.message}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-gray-50 px-6 py-3 border-t border-gray-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setTestModalResults(null)}
+                className="px-4 py-1.5 bg-gray-900 hover:bg-gray-800 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
+              >
+                Close Results
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

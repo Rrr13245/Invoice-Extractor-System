@@ -9,6 +9,21 @@ export interface InvoiceLineItem {
   totalAmount: number; // Final amount for this item (qty * unitPrice - discount + taxAmount, or as stated)
 }
 
+export type InvoiceValidationStatus = 
+  | 'auto_validated'
+  | 'human_verified'
+  | 'needs_review'
+  | 'duplicate'
+  | 'extraction_failed';
+
+export interface AiReviewNote {
+  field?: string;
+  sourceType?: 'printed' | 'calculated' | 'suggested' | 'not_found';
+  confidence?: 'High' | 'Medium' | 'Low';
+  message: string;
+  requiresConfirmation?: boolean;
+}
+
 export interface InvoiceData {
   id: string; // Internal unique ID
   fileName: string; // Name of the uploaded file
@@ -17,7 +32,17 @@ export interface InvoiceData {
   base64Data?: string; // Optional raw base64 data for retrying AI extraction
   status: 'pending' | 'success' | 'error';
   errorMessage?: string;
-  isVerified?: boolean; // User or automatic verification flag
+  isVerified?: boolean; // User explicit verification flag
+
+  // Internal Audit & Review Fields (Not exported to Excel):
+  suggestedInvoiceNumber?: string;
+  aiReviewNotes?: AiReviewNote[];
+  calcOverrideConfirmed?: boolean;
+  calcOverrideReason?: string;
+  isDuplicateDismissed?: boolean;
+  fileFingerprint?: string;
+  fileHash?: string; // Cryptographic SHA-256 hash of uploaded file content
+  validationStatus?: InvoiceValidationStatus;
 
   // Extracted Fields:
   invoiceNumber: string;

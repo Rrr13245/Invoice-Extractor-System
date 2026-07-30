@@ -121,18 +121,15 @@ app.post("/api/extract", async (req, res) => {
     const promptPart = {
       text: `You are an expert accounts payable assistant for a hardware company. Analyze the uploaded invoice document (Source File Name: "${fileName}") and extract all relevant information exactly as structured in the response schema.
 
-CRITICAL INSTRUCTIONS FOR INVOICE IDENTIFICATION & FILENAME MATCHING:
-1. Examine the document for the printed Invoice Number / Reference Number.
-2. The source file being uploaded is named "${fileName}".
-3. If the document contains an explicit printed invoice number (e.g., "WSIS-2026-205" or "WSIS-2026-207"), extract it accurately.
-4. If the document body is an unedited copy, scan, or template where the invoice number inside the document is ambiguous, blurry, or missing, check if the filename "${fileName}" contains a clear invoice code (e.g., "WSIS-2026-205" or "TBMW-2026-200") and use that as the invoice identifier for this file.
+CRITICAL INSTRUCTIONS FOR ACCURACY & TRUTHFUL EXTRACTION:
+1. Examine headers, footers, tables, fine print, and all pages for printed/written information.
+2. Invoice Number: Extract the invoice number printed strictly inside the document text. If the printed invoice number is unreadable, ambiguous, or missing, leave \`invoiceNumber\` as an empty string "". Do NOT put a filename-derived code into \`invoiceNumber\`.
+3. Suggested Invoice Number: If the filename "${fileName}" contains a clear invoice code pattern (e.g. "WSIS-2026-205" or "INV-9982"), return it separately in \`suggestedInvoiceNumber\`. Do NOT set \`invoiceNumber\` to it unless confirmed in document text.
+4. Currency: Extract the currency code or symbol (e.g., SGD, USD, EUR, GBP, AUD, $, S$, €). If currency is not explicitly found, leave \`currency\` as an empty string "".
+5. Payment Terms: Pay extra special attention to fine print, footers, headers, margin notes, and sections labeled 'Terms & Conditions', 'Terms of Payment', 'Terms of Sale', 'Notes', or 'Remittance Instructions'. Extract terms (e.g., 'Net 30', 'Net 15', 'Due on Receipt', '2% 10 Net 30', 'COD') into \`paymentTerms\` and late fees into \`latePaymentTerms\`. If not explicitly stated in document, leave as "".
+6. AI Review Notes: Provide structured plain-language review notes in \`aiReviewNotes\` detailing what was found printed on the document vs calculated vs suggested vs missing.
 
-CRITICAL INSTRUCTION FOR PAYMENT TERMS & CONDITIONS:
-1. Pay extra special attention to fine print, footers, headers, margin notes, and sections labeled 'Terms & Conditions', 'Terms of Payment', 'Terms of Sale', 'Notes', or 'Remittance Instructions'.
-2. Suppliers very commonly embed payment terms (such as 'Net 30', 'Net 15', 'Net 60', 'Due on Receipt', '2% 10 Net 30', 'Payment due within 30 days', 'COD', or '100% in Advance') and late payment fees/interest (e.g. '1.5% interest per month on overdue balances') inside paragraph text or fine print at the bottom of the page.
-3. You MUST thoroughly parse and extract these into \`paymentTerms\` and \`latePaymentTerms\` even if they appear in narrative fine print rather than a top-level labeled form field.
-
-If a field is not found anywhere in the invoice, leave it as an empty string (for strings) or 0 (for numbers). Make sure to extract all line items accurately. Ensure that sums are mathematically consistent. For bankDetails, combine any available bank name, branch, SWIFT/BIC, or payment instructions. For bankAccount, extract the specific account number or IBAN.`
+If a field is not found anywhere in the invoice, leave it as an empty string (for strings) or 0 (for numbers). Make sure to extract all line items accurately. Ensure that sums are mathematically consistent.`
     };
 
     const response = await generateContentWithRetry(ai, {
@@ -143,12 +140,13 @@ If a field is not found anywhere in the invoice, leave it as an empty string (fo
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            invoiceNumber: { type: Type.STRING, description: "The invoice number or invoice ID reference." },
+            invoiceNumber: { type: Type.STRING, description: "The printed invoice number or invoice ID reference from inside the document text." },
+            suggestedInvoiceNumber: { type: Type.STRING, description: "Possible invoice number suggested from filename if document text is unclear." },
             invoiceDate: { type: Type.STRING, description: "The date when the invoice was issued (usually YYYY-MM-DD or as written)." },
             paymentDueDate: { type: Type.STRING, description: "The deadline for payment (usually YYYY-MM-DD or as written)." },
-            currency: { type: Type.STRING, description: "The currency code or symbol used (e.g., USD, EUR, GBP, CAD, AUD, $, €, £)." },
+            currency: { type: Type.STRING, description: "The currency code or symbol used (e.g., SGD, USD, EUR, GBP, $, S$, €). Empty string if unclear." },
             purchaseOrder: { type: Type.STRING, description: "The purchase order (PO) number if mentioned, otherwise empty." },
-            supplierName: { type: Type.STRING, description: "The company or individual name of the supplier/sender." },
+            supplierName: { type: Type.STRING, description: "The company or individual name of the supplier/sender as printed on document." },
             supplierAddress: { type: Type.STRING, description: "The full address of the supplier." },
             supplierContact: { type: Type.STRING, description: "Contact details of the supplier (phone, email, website, etc.)." },
             businessRegistrationOrTaxId: { type: Type.STRING, description: "The supplier's business registration number, VAT number, tax ID, or equivalent." },
@@ -160,10 +158,24 @@ If a field is not found anywhere in the invoice, leave it as an empty string (fo
             deliveryCharges: { type: Type.NUMBER, description: "Delivery, shipping, freight, or other additional service fees (otherwise 0)." },
             finalAmountPayable: { type: Type.NUMBER, description: "The final total outstanding amount that must be paid." },
             amountAlreadyPaid: { type: Type.NUMBER, description: "Any amount already paid or credited, if stated (otherwise 0)." },
-            outstandingBalance: { type: Type.NUMBER, description: "The remaining unpaid balance if explicitly stated, or the final amount minus amount already paid." },
-            paymentTerms: { type: Type.STRING, description: "Payment terms and credit terms (e.g., Net 30, Due on Receipt, Net 15, Net 60, 2/10 Net 30, Payment due within 30 days). Thoroughly scan fine print, footers, and Terms & Conditions blocks." },
+            outstandingBalance: { type: Type.NUMBER, description: "The remaining unpaid balance if explicitly stated, or final amount minus amount already paid." },
+            paymentTerms: { type: Type.STRING, description: "Payment terms stated in fine print, footers, or Terms & Conditions blocks." },
             acceptedPaymentMethod: { type: Type.STRING, description: "Accepted payment methods (e.g., Bank Transfer, Credit Card, PayPal, Check)." },
-            latePaymentTerms: { type: Type.STRING, description: "Any fees, interest rates, or penalty terms regarding late/overdue payments if stated in the fine print or Terms & Conditions (e.g., '1.5% late fee per month')." },
+            latePaymentTerms: { type: Type.STRING, description: "Any fees, interest rates, or penalty terms regarding late/overdue payments." },
+            aiReviewNotes: {
+              type: Type.ARRAY,
+              description: "Audit review notes detailing extraction findings.",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  field: { type: Type.STRING },
+                  sourceType: { type: Type.STRING, description: "printed | calculated | suggested | not_found" },
+                  message: { type: Type.STRING },
+                  requiresConfirmation: { type: Type.BOOLEAN }
+                },
+                required: ["message"]
+              }
+            },
             lineItems: {
               type: Type.ARRAY,
               description: "A list of individual line items or products/services in the invoice.",
@@ -171,12 +183,12 @@ If a field is not found anywhere in the invoice, leave it as an empty string (fo
                 type: Type.OBJECT,
                 properties: {
                   description: { type: Type.STRING, description: "Description of the product or service provided." },
-                  quantity: { type: Type.NUMBER, description: "The quantity of items/hours (default to 1 if not specified)." },
+                  quantity: { type: Type.NUMBER, description: "The quantity of items/hours." },
                   unitPrice: { type: Type.NUMBER, description: "The price per individual unit or hour." },
                   discount: { type: Type.NUMBER, description: "The discount amount or percentage applied specifically to this item (0 if none)." },
                   taxRate: { type: Type.NUMBER, description: "The tax rate percentage applied to this item, e.g. 15 for 15% (0 if none)." },
                   taxAmount: { type: Type.NUMBER, description: "The calculated tax amount for this specific item (0 if none)." },
-                  totalAmount: { type: Type.NUMBER, description: "The total price for this item (usually quantity * unitPrice - discount + tax)." }
+                  totalAmount: { type: Type.NUMBER, description: "The total price for this item." }
                 },
                 required: ["description", "quantity", "unitPrice", "discount", "taxRate", "taxAmount", "totalAmount"]
               }
@@ -199,38 +211,6 @@ If a field is not found anywhere in the invoice, leave it as an empty string (fo
     }
 
     const extractedData = JSON.parse(text.trim());
-
-    // Smart fallback inference for paymentTerms if empty or unpopulated
-    if (!extractedData.paymentTerms || extractedData.paymentTerms.trim() === '') {
-      const late = extractedData.latePaymentTerms || '';
-      const termMatches = late.match(/\b(Net\s*\d+|Due\s*(?:on|upon)\s*Receipt|COD|Cash\s*on\s*Delivery|\d+\/\d+\s*Net\s*\d+)\b/i);
-      if (termMatches) {
-        extractedData.paymentTerms = termMatches[0];
-      } else if (extractedData.invoiceDate && extractedData.paymentDueDate) {
-        try {
-          const d1 = new Date(extractedData.invoiceDate);
-          const d2 = new Date(extractedData.paymentDueDate);
-          if (!isNaN(d1.getTime()) && !isNaN(d2.getTime())) {
-            const diffDays = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
-            if (diffDays <= 1) {
-              extractedData.paymentTerms = "Due on Receipt";
-            } else if (diffDays >= 14 && diffDays <= 16) {
-              extractedData.paymentTerms = "Net 15";
-            } else if (diffDays >= 28 && diffDays <= 32) {
-              extractedData.paymentTerms = "Net 30";
-            } else if (diffDays >= 58 && diffDays <= 62) {
-              extractedData.paymentTerms = "Net 60";
-            } else if (diffDays >= 88 && diffDays <= 92) {
-              extractedData.paymentTerms = "Net 90";
-            } else if (diffDays > 1) {
-              extractedData.paymentTerms = `Net ${diffDays}`;
-            }
-          }
-        } catch (e) {
-          // Ignore date parse errors
-        }
-      }
-    }
 
     res.json(extractedData);
   } catch (error: any) {
