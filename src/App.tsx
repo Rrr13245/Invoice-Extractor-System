@@ -2002,7 +2002,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="font-extrabold text-base tracking-tight text-gray-900">
-                Invoice Extraction Register
+                InvoiceGuard
               </h1>
               <p className="text-[10px] font-mono font-bold tracking-wider text-gray-500 uppercase">
                 AP DOCUMENT INTAKE SYSTEM
@@ -2503,7 +2503,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-white border-t border-gray-200 py-6 text-center text-[10px] font-mono font-semibold tracking-wider text-gray-500 uppercase mt-auto">
-        BOON HUAT HARDWARE &amp; SUPPLIES • ACCOUNTS PAYABLE INVOICE EXTRACTION SYSTEM
+        BOON HUAT HARDWARE &amp; SUPPLIES • INVOICEGUARD AP SYSTEM
       </footer>
 
       {/* Historical Ledger Modal */}
