@@ -983,7 +983,7 @@ export function getInvoiceReviewReasons(
 }
 
 export interface InvoiceValidationSummary {
-  status: 'auto_validated' | 'human_verified' | 'needs_review' | 'duplicate' | 'extraction_failed';
+  status: 'auto_validated' | 'human_verified' | 'needs_review' | 'duplicate' | 'extraction_failed' | 'rejected' | 'on_hold';
   statusLabel: string;
   statusBadgeClass: string;
   isAutoValidated: boolean;
@@ -1008,6 +1008,32 @@ export function getInvoiceValidationSummary(
       isHumanVerified: false,
       isReadyForExport: false,
       reasonsForReview: [invoice.errorMessage || 'AI document extraction failed.']
+    };
+  }
+
+  // Explicit Rejected status takes precedence
+  if (invoice.isRejected) {
+    return {
+      status: 'rejected',
+      statusLabel: 'Invoice Rejected',
+      statusBadgeClass: 'bg-rose-100 text-rose-900 border-rose-300 font-semibold',
+      isAutoValidated: false,
+      isHumanVerified: false,
+      isReadyForExport: false,
+      reasonsForReview: [invoice.rejectionReason ? `Rejected: ${invoice.rejectionReason}` : 'Invoice rejected by Accounts Payable operator.']
+    };
+  }
+
+  // Explicit On-Hold status takes precedence
+  if (invoice.isOnHold) {
+    return {
+      status: 'on_hold',
+      statusLabel: 'Invoice On Hold',
+      statusBadgeClass: 'bg-purple-100 text-purple-900 border-purple-300 font-semibold',
+      isAutoValidated: false,
+      isHumanVerified: false,
+      isReadyForExport: false,
+      reasonsForReview: [invoice.holdReason ? `On Hold: ${invoice.holdReason}` : 'Invoice placed on hold pending vendor or document resolution.']
     };
   }
 

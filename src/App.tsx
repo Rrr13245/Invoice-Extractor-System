@@ -37,7 +37,9 @@ import {
   FileCheck,
   Check,
   Layers,
-  Search
+  Search,
+  XCircle,
+  PauseCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { InvoiceData, InvoiceLineItem } from './types';
@@ -222,6 +224,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'preview' | 'supplier' | 'metadata' | 'banking' | 'totals' | 'history'>('preview');
   const [historySearchTerm, setHistorySearchTerm] = useState<string>('');
   const [viewLayout, setViewLayout] = useState<'tabbed' | 'split'>('tabbed');
+  const [queueFilter, setQueueFilter] = useState<'all' | 'ready_3way' | 'needs_review' | 'on_hold' | 'rejected'>('all');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Historical verified ledger state
@@ -278,12 +281,38 @@ export default function App() {
     return true;
   }, [selectedInvoice, selectedMissingFields, selectedDupDetails, selectedCalcWarnings]);
 
-  // Verified & Ready for Three-Way Match invoices for Excel Export (Auto-Validated OR Human-Verified)
+  // Categorized collections for document queue filtering & export
   const cleanInvoices = useMemo(() => {
     return invoices.filter(inv => {
       const dup = duplicateAnalysis[inv.id];
       const summary = getInvoiceValidationSummary(inv, dup);
       return summary.isReadyForExport;
+    });
+  }, [invoices, duplicateAnalysis]);
+
+  const ready3WayInvoices = cleanInvoices;
+
+  const needsReviewInvoices = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const summary = getInvoiceValidationSummary(inv, dup);
+      return summary.status === 'needs_review' || summary.status === 'duplicate' || summary.status === 'extraction_failed' || inv.status === 'pending';
+    });
+  }, [invoices, duplicateAnalysis]);
+
+  const onHoldInvoices = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const summary = getInvoiceValidationSummary(inv, dup);
+      return summary.status === 'on_hold';
+    });
+  }, [invoices, duplicateAnalysis]);
+
+  const rejectedInvoices = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const summary = getInvoiceValidationSummary(inv, dup);
+      return summary.status === 'rejected';
     });
   }, [invoices, duplicateAnalysis]);
 
@@ -335,6 +364,22 @@ export default function App() {
   const failedCount = useMemo(() => {
     return invoices.filter(inv => inv.status === 'error').length;
   }, [invoices]);
+
+  const rejectedCount = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const s = getInvoiceValidationSummary(inv, dup);
+      return s.status === 'rejected';
+    }).length;
+  }, [invoices, duplicateAnalysis]);
+
+  const onHoldCount = useMemo(() => {
+    return invoices.filter(inv => {
+      const dup = duplicateAnalysis[inv.id];
+      const s = getInvoiceValidationSummary(inv, dup);
+      return s.status === 'on_hold';
+    }).length;
+  }, [invoices, duplicateAnalysis]);
 
   // Invoice queue navigation
   const currentInvoiceIndex = useMemo(() => {
@@ -826,7 +871,12 @@ export default function App() {
 
     setInvoices(prev => prev.map(inv => {
       if (inv.id === selectedInvoice.id) {
-        const verifiedInv = { ...inv, isVerified: true };
+        const verifiedInv = { 
+          ...inv, 
+          isVerified: true,
+          isRejected: false,
+          isOnHold: false
+        };
         saveVerifiedInvoiceToHistory(verifiedInv);
         return verifiedInv;
       }
@@ -834,6 +884,40 @@ export default function App() {
     }));
 
     setHistoricalRecords(getHistoricalVerifiedInvoices());
+  };
+
+  // Reject selected invoice
+  const handleRejectInvoice = () => {
+    if (!selectedInvoice) return;
+    setInvoices(prev => prev.map(inv => {
+      if (inv.id === selectedInvoice.id) {
+        const willBeRejected = !inv.isRejected;
+        return {
+          ...inv,
+          isRejected: willBeRejected,
+          isVerified: false,
+          isOnHold: false
+        };
+      }
+      return inv;
+    }));
+  };
+
+  // Put selected invoice on hold
+  const handlePutOnHold = () => {
+    if (!selectedInvoice) return;
+    setInvoices(prev => prev.map(inv => {
+      if (inv.id === selectedInvoice.id) {
+        const willBeOnHold = !inv.isOnHold;
+        return {
+          ...inv,
+          isOnHold: willBeOnHold,
+          isVerified: false,
+          isRejected: false
+        };
+      }
+      return inv;
+    }));
   };
 
   // Dismiss duplicate warning
@@ -1290,29 +1374,41 @@ export default function App() {
 
         {/* VERIFICATION STATUS & ACTION BAR */}
         {selectedValidationSummary && (
-          <div className={`p-4 rounded-xl border flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs ${
+          <div className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs ${
             selectedValidationSummary.status === 'auto_validated'
               ? 'bg-blue-50 border-blue-300'
               : selectedValidationSummary.status === 'human_verified'
                 ? 'bg-emerald-50 border-emerald-300'
-                : 'bg-amber-50 border-amber-300'
+                : selectedValidationSummary.status === 'rejected'
+                  ? 'bg-rose-50 border-rose-300'
+                  : selectedValidationSummary.status === 'on_hold'
+                    ? 'bg-purple-50 border-purple-300'
+                    : 'bg-amber-50 border-amber-300'
           }`}>
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3 min-w-0">
               {selectedValidationSummary.status === 'auto_validated' ? (
                 <CheckCircle2 className="w-6 h-6 text-blue-600 shrink-0 mt-0.5" />
               ) : selectedValidationSummary.status === 'human_verified' ? (
                 <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0 mt-0.5" />
+              ) : selectedValidationSummary.status === 'rejected' ? (
+                <XCircle className="w-6 h-6 text-rose-600 shrink-0 mt-0.5" />
+              ) : selectedValidationSummary.status === 'on_hold' ? (
+                <PauseCircle className="w-6 h-6 text-purple-600 shrink-0 mt-0.5" />
               ) : (
                 <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0 mt-0.5" />
               )}
-              <div>
-                <div className="flex items-center gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h4 className={`font-bold text-sm ${
                     selectedValidationSummary.status === 'auto_validated'
                       ? 'text-blue-950'
                       : selectedValidationSummary.status === 'human_verified'
                         ? 'text-emerald-950'
-                        : 'text-amber-950'
+                        : selectedValidationSummary.status === 'rejected'
+                          ? 'text-rose-950'
+                          : selectedValidationSummary.status === 'on_hold'
+                            ? 'text-purple-950'
+                            : 'text-amber-950'
                   }`}>
                     {selectedValidationSummary.statusLabel}
                   </h4>
@@ -1327,6 +1423,12 @@ export default function App() {
                   )}
                   {selectedValidationSummary.status === 'human_verified' && (
                     "Madam Lim resolved exceptions and explicitly verified this invoice. It is ready for three-way matching and included in Excel export."
+                  )}
+                  {selectedValidationSummary.status === 'rejected' && (
+                    "Invoice was explicitly rejected by Accounts Payable operator. It is excluded from three-way matching and export."
+                  )}
+                  {selectedValidationSummary.status === 'on_hold' && (
+                    "Invoice is placed on hold pending vendor or document resolution. It is excluded from three-way matching."
                   )}
                   {selectedValidationSummary.status === 'needs_review' && (
                     "Exceptions detected. Madam Lim should review and correct the flagged issues below before three-way matching:"
@@ -1346,34 +1448,92 @@ export default function App() {
                     ))}
                   </ul>
                 )}
+
+                {selectedInvoice.isRejected && (
+                  <div className="mt-2 text-xs text-rose-900 bg-rose-100/60 p-2.5 rounded-lg border border-rose-200 flex items-center gap-2">
+                    <span className="font-bold shrink-0">Rejection Note:</span>
+                    <input
+                      type="text"
+                      value={selectedInvoice.rejectionReason || ''}
+                      onChange={(e) => handleUpdateField('rejectionReason', e.target.value)}
+                      placeholder="Add reason for rejection (e.g. Price mismatch, unauthorized item)..."
+                      className="w-full bg-white border border-rose-300 rounded px-2 py-1 text-xs text-gray-900 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                    />
+                  </div>
+                )}
+
+                {selectedInvoice.isOnHold && (
+                  <div className="mt-2 text-xs text-purple-900 bg-purple-100/60 p-2.5 rounded-lg border border-purple-200 flex items-center gap-2">
+                    <span className="font-bold shrink-0">Hold Reason:</span>
+                    <input
+                      type="text"
+                      value={selectedInvoice.holdReason || ''}
+                      onChange={(e) => handleUpdateField('holdReason', e.target.value)}
+                      placeholder="Add reason for holding (e.g. Pending receiving slip, vendor inquiry open)..."
+                      className="w-full bg-white border border-purple-300 rounded px-2 py-1 text-xs text-gray-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0 flex-wrap">
+              {/* Mark as Verified Button */}
               {selectedInvoice.isVerified ? (
                 <button
                   type="button"
                   onClick={() => handleUpdateField('isVerified', false)}
-                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200 rounded transition cursor-pointer"
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-slate-200 hover:bg-slate-300 rounded-lg transition cursor-pointer flex items-center gap-1.5"
                 >
-                  Unverify
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Unverify</span>
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={handleMarkAsVerified}
                   disabled={!canVerifySelected}
-                  className={`px-4 py-2 font-bold text-xs rounded-lg shadow-xs flex items-center gap-1.5 transition ${
+                  className={`px-3.5 py-1.5 font-bold text-xs rounded-lg shadow-xs flex items-center gap-1.5 transition ${
                     canVerifySelected 
                       ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer' 
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                   }`}
                   title={canVerifySelected ? 'Explicitly mark invoice as human-verified' : 'Cannot verify while mandatory fields or blockers remain unresolved'}
                 >
-                  <CheckCircle2 className="w-4 h-4" />
-                  Mark as Verified
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Mark as Verified</span>
                 </button>
               )}
+
+              {/* Reject Button */}
+              <button
+                type="button"
+                onClick={handleRejectInvoice}
+                className={`px-3.5 py-1.5 font-bold text-xs rounded-lg shadow-xs flex items-center gap-1.5 transition cursor-pointer ${
+                  selectedInvoice.isRejected
+                    ? 'bg-rose-700 hover:bg-rose-800 text-white ring-2 ring-rose-300'
+                    : 'bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300'
+                }`}
+                title={selectedInvoice.isRejected ? 'Click to undo rejection' : 'Reject this invoice'}
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                <span>{selectedInvoice.isRejected ? 'Rejected' : 'Reject'}</span>
+              </button>
+
+              {/* Put On Hold Button */}
+              <button
+                type="button"
+                onClick={handlePutOnHold}
+                className={`px-3.5 py-1.5 font-bold text-xs rounded-lg shadow-xs flex items-center gap-1.5 transition cursor-pointer ${
+                  selectedInvoice.isOnHold
+                    ? 'bg-purple-700 hover:bg-purple-800 text-white ring-2 ring-purple-300'
+                    : 'bg-purple-100 hover:bg-purple-200 text-purple-900 border border-purple-300'
+                }`}
+                title={selectedInvoice.isOnHold ? 'Click to release hold' : 'Put this invoice on hold'}
+              >
+                <PauseCircle className="w-3.5 h-3.5" />
+                <span>{selectedInvoice.isOnHold ? 'On Hold' : 'Put on Hold'}</span>
+              </button>
             </div>
           </div>
         )}
@@ -1898,16 +2058,24 @@ export default function App() {
                 ? 'bg-amber-100 text-amber-700'
                 : summary.status === 'extraction_failed'
                   ? 'bg-rose-100 text-rose-700'
-                  : summary.status === 'auto_validated'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : summary.status === 'human_verified'
-                      ? 'bg-indigo-100 text-indigo-800'
-                      : 'bg-amber-100 text-amber-800'
+                  : summary.status === 'rejected'
+                    ? 'bg-rose-100 text-rose-700'
+                    : summary.status === 'on_hold'
+                      ? 'bg-purple-100 text-purple-700'
+                      : summary.status === 'auto_validated'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : summary.status === 'human_verified'
+                          ? 'bg-indigo-100 text-indigo-800'
+                          : 'bg-amber-100 text-amber-800'
             }`}>
               {inv.status === 'pending' ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : summary.status === 'extraction_failed' ? (
                 <AlertCircle className="w-4 h-4" />
+              ) : summary.status === 'rejected' ? (
+                <XCircle className="w-4 h-4 text-rose-600" />
+              ) : summary.status === 'on_hold' ? (
+                <PauseCircle className="w-4 h-4 text-purple-600" />
               ) : summary.status === 'auto_validated' ? (
                 <FileCheck className="w-4 h-4 text-emerald-700" />
               ) : summary.status === 'human_verified' ? (
@@ -1956,6 +2124,20 @@ export default function App() {
             <span className="bg-indigo-50 text-indigo-900 font-bold px-2 py-0.5 rounded-full border border-indigo-200 flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3 text-indigo-600" />
               Human-Verified
+            </span>
+          )}
+
+          {summary.status === 'rejected' && (
+            <span className="bg-rose-50 text-rose-900 font-bold px-2 py-0.5 rounded-full border border-rose-200 flex items-center gap-1">
+              <XCircle className="w-3 h-3 text-rose-600" />
+              Rejected
+            </span>
+          )}
+
+          {summary.status === 'on_hold' && (
+            <span className="bg-purple-50 text-purple-900 font-bold px-2 py-0.5 rounded-full border border-purple-200 flex items-center gap-1">
+              <PauseCircle className="w-3 h-3 text-purple-600" />
+              On Hold
             </span>
           )}
 
@@ -2101,51 +2283,115 @@ export default function App() {
         </div>
 
         {/* 3. Dashboard Metric Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          <button
+            type="button"
+            onClick={() => setQueueFilter('all')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'all'
+                ? 'bg-gray-100 border-gray-400 ring-2 ring-gray-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-gray-300 shadow-2xs'
+            }`}
+          >
             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Total Invoices</p>
             <p className="text-2xl font-extrabold text-gray-900 mt-1">{totalCount}</p>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setQueueFilter('ready_3way')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'ready_3way'
+                ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-emerald-300 shadow-2xs'
+            }`}
+          >
             <p className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1">
               <FileCheck className="w-3 h-3 text-emerald-600" />
               Auto-Validated
             </p>
             <p className="text-2xl font-extrabold text-emerald-700 mt-1">{autoValidatedCount}</p>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setQueueFilter('ready_3way')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'ready_3way'
+                ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-indigo-300 shadow-2xs'
+            }`}
+          >
             <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3 text-indigo-600" />
               Human-Verified
             </p>
             <p className="text-2xl font-extrabold text-indigo-700 mt-1">{humanVerifiedCount}</p>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setQueueFilter('on_hold')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'on_hold'
+                ? 'bg-purple-50 border-purple-400 ring-2 ring-purple-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-purple-300 shadow-2xs'
+            }`}
+          >
+            <p className="text-[10px] font-bold text-purple-700 uppercase tracking-wider flex items-center gap-1">
+              <PauseCircle className="w-3 h-3 text-purple-600" />
+              On Hold
+            </p>
+            <p className="text-2xl font-extrabold text-purple-700 mt-1">{onHoldCount}</p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setQueueFilter('rejected')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'rejected'
+                ? 'bg-rose-50 border-rose-400 ring-2 ring-rose-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-rose-300 shadow-2xs'
+            }`}
+          >
+            <p className="text-[10px] font-bold text-rose-700 uppercase tracking-wider flex items-center gap-1">
+              <XCircle className="w-3 h-3 text-rose-600" />
+              Rejected
+            </p>
+            <p className="text-2xl font-extrabold text-rose-700 mt-1">{rejectedCount}</p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setQueueFilter('needs_review')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'needs_review'
+                ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-amber-300 shadow-2xs'
+            }`}
+          >
             <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1">
               <AlertTriangle className="w-3 h-3 text-amber-600" />
               Review Required
             </p>
             <p className="text-2xl font-extrabold text-amber-700 mt-1">{reviewRequiredCount}</p>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setQueueFilter('needs_review')}
+            className={`text-left rounded-xl border p-3.5 transition cursor-pointer ${
+              queueFilter === 'needs_review'
+                ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-400/30 shadow-xs'
+                : 'bg-white border-gray-200 hover:border-amber-300 shadow-2xs'
+            }`}
+          >
             <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider flex items-center gap-1">
               <Layers className="w-3 h-3 text-amber-600" />
               Duplicates
             </p>
             <p className="text-2xl font-extrabold text-amber-800 mt-1">{duplicatesCount}</p>
-          </div>
-
-          <div className="bg-white rounded-xl border border-gray-200 p-3.5 shadow-2xs">
-            <p className="text-[10px] font-bold text-rose-700 uppercase tracking-wider flex items-center gap-1">
-              <AlertCircle className="w-3 h-3 text-rose-600" />
-              Extraction Failed
-            </p>
-            <p className="text-2xl font-extrabold text-rose-700 mt-1">{failedCount}</p>
-          </div>
+          </button>
         </div>
 
         {/* 4. Main Section Card */}
@@ -2279,6 +2525,104 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Queue Filter Pills */}
+                {invoices.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pb-3 border-b border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setQueueFilter('all')}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                        queueFilter === 'all'
+                          ? 'bg-gray-900 text-white shadow-xs'
+                          : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                      }`}
+                    >
+                      <span>All</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        queueFilter === 'all' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+                      }`}>
+                        {invoices.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQueueFilter('ready_3way')}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                        queueFilter === 'ready_3way'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/60'
+                      }`}
+                      title="Show invoices ready for three-way matching & export"
+                    >
+                      <CheckCircle2 className="w-3 h-3" />
+                      <span>Ready 3-Way</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        queueFilter === 'ready_3way' ? 'bg-white/20 text-white' : 'bg-emerald-200/80 text-emerald-900'
+                      }`}>
+                        {ready3WayInvoices.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQueueFilter('needs_review')}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                        queueFilter === 'needs_review'
+                          ? 'bg-amber-600 text-white shadow-xs'
+                          : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/60'
+                      }`}
+                      title="Show invoices requiring human review"
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      <span>Needs Review</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        queueFilter === 'needs_review' ? 'bg-white/20 text-white' : 'bg-amber-200/80 text-amber-900'
+                      }`}>
+                        {needsReviewInvoices.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQueueFilter('on_hold')}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                        queueFilter === 'on_hold'
+                          ? 'bg-purple-600 text-white shadow-xs'
+                          : 'bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200/60'
+                      }`}
+                      title="Show invoices placed on hold"
+                    >
+                      <PauseCircle className="w-3 h-3" />
+                      <span>On Hold</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        queueFilter === 'on_hold' ? 'bg-white/20 text-white' : 'bg-purple-200/80 text-purple-900'
+                      }`}>
+                        {onHoldInvoices.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQueueFilter('rejected')}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                        queueFilter === 'rejected'
+                          ? 'bg-rose-600 text-white shadow-xs'
+                          : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200/60'
+                      }`}
+                      title="Show rejected invoices"
+                    >
+                      <XCircle className="w-3 h-3" />
+                      <span>Rejected</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                        queueFilter === 'rejected' ? 'bg-white/20 text-white' : 'bg-rose-200/80 text-rose-900'
+                      }`}>
+                        {rejectedInvoices.length}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
                 {invoices.length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-center p-8 text-gray-400">
                     <FileSearch className="w-10 h-10 text-gray-300 mb-2" />
@@ -2290,28 +2634,114 @@ export default function App() {
                 ) : (
                   <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
                     {/* Needs Attention / Human Review Section */}
-                    {attentionInvoices.length > 0 && (
+                    {(queueFilter === 'all' || queueFilter === 'needs_review') && needsReviewInvoices.length > 0 && (
                       <div>
                         <h4 className="text-[11px] font-bold text-amber-800 uppercase tracking-wider mb-2 flex items-center gap-1">
                           <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                          Needs Human Review ({attentionInvoices.length})
+                          Needs Human Review ({needsReviewInvoices.length})
                         </h4>
                         <div className="space-y-2">
-                          {attentionInvoices.map(inv => renderInvoiceItem(inv, true))}
+                          {needsReviewInvoices.map(inv => renderInvoiceItem(inv, true))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* On Hold Section */}
+                    {(queueFilter === 'all' || queueFilter === 'on_hold') && onHoldInvoices.length > 0 && (
+                      <div>
+                        <h4 className="text-[11px] font-bold text-purple-800 uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <PauseCircle className="w-3.5 h-3.5 text-purple-600" />
+                          Invoices On Hold ({onHoldInvoices.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {onHoldInvoices.map(inv => renderInvoiceItem(inv, false))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Rejected Section */}
+                    {(queueFilter === 'all' || queueFilter === 'rejected') && rejectedInvoices.length > 0 && (
+                      <div>
+                        <h4 className="text-[11px] font-bold text-rose-800 uppercase tracking-wider mb-2 flex items-center gap-1">
+                          <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                          Rejected Invoices ({rejectedInvoices.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {rejectedInvoices.map(inv => renderInvoiceItem(inv, false))}
                         </div>
                       </div>
                     )}
 
                     {/* Ready for Matching Section */}
-                    {cleanInvoices.length > 0 && (
+                    {(queueFilter === 'all' || queueFilter === 'ready_3way') && ready3WayInvoices.length > 0 && (
                       <div>
                         <h4 className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider mb-2 flex items-center gap-1">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          Ready for Three-Way Match ({cleanInvoices.length})
+                          Ready for Three-Way Match ({ready3WayInvoices.length})
                         </h4>
                         <div className="space-y-2">
-                          {cleanInvoices.map(inv => renderInvoiceItem(inv, false))}
+                          {ready3WayInvoices.map(inv => renderInvoiceItem(inv, false))}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Empty state for ready_3way */}
+                    {queueFilter === 'ready_3way' && ready3WayInvoices.length === 0 && (
+                      <div className="p-6 text-center text-gray-400 bg-gray-50 rounded-xl border border-gray-200">
+                        <CheckCircle2 className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-gray-600">No invoices ready for 3-way match</p>
+                        <button
+                          type="button"
+                          onClick={() => setQueueFilter('all')}
+                          className="mt-2 text-[11px] text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                        >
+                          Show All Invoices
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Empty state for needs_review */}
+                    {queueFilter === 'needs_review' && needsReviewInvoices.length === 0 && (
+                      <div className="p-6 text-center text-gray-400 bg-gray-50 rounded-xl border border-gray-200">
+                        <AlertCircle className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-gray-600">No invoices requiring human review</p>
+                        <button
+                          type="button"
+                          onClick={() => setQueueFilter('all')}
+                          className="mt-2 text-[11px] text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                        >
+                          Show All Invoices
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Empty state for on_hold */}
+                    {queueFilter === 'on_hold' && onHoldInvoices.length === 0 && (
+                      <div className="p-6 text-center text-gray-400 bg-gray-50 rounded-xl border border-gray-200">
+                        <PauseCircle className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-gray-600">No invoices currently on hold</p>
+                        <button
+                          type="button"
+                          onClick={() => setQueueFilter('all')}
+                          className="mt-2 text-[11px] text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                        >
+                          Show All Invoices
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Empty state for rejected */}
+                    {queueFilter === 'rejected' && rejectedInvoices.length === 0 && (
+                      <div className="p-6 text-center text-gray-400 bg-gray-50 rounded-xl border border-gray-200">
+                        <XCircle className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-gray-600">No rejected invoices</p>
+                        <button
+                          type="button"
+                          onClick={() => setQueueFilter('all')}
+                          className="mt-2 text-[11px] text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                        >
+                          Show All Invoices
+                        </button>
                       </div>
                     )}
                   </div>

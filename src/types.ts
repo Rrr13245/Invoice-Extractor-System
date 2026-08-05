@@ -14,7 +14,9 @@ export type InvoiceValidationStatus =
   | 'human_verified'
   | 'needs_review'
   | 'duplicate'
-  | 'extraction_failed';
+  | 'extraction_failed'
+  | 'rejected'
+  | 'on_hold';
 
 export interface AiReviewNote {
   field?: string;
@@ -50,6 +52,10 @@ export interface InvoiceData {
   status: 'pending' | 'success' | 'error';
   errorMessage?: string;
   isVerified?: boolean; // User explicit verification flag
+  isRejected?: boolean; // User explicit rejection flag
+  rejectionReason?: string;
+  isOnHold?: boolean; // User explicit on hold flag
+  holdReason?: string;
 
   // Internal Audit & Review Fields (Not exported to Excel):
   suggestedInvoiceNumber?: string;
