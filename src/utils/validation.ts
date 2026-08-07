@@ -218,6 +218,7 @@ export interface HistoricalInvoiceRecordV3 {
   invoiceNumber: string;
   invoiceDate?: string;
   purchaseOrder?: string;
+  grnReference?: string;
   currency?: string;
   invoiceSubtotal?: number;
   totalTax?: number;
@@ -353,6 +354,7 @@ export function saveVerifiedInvoiceToHistory(invoice: InvoiceData): void {
       invoiceNumber: invoice.invoiceNumber,
       invoiceDate: invoice.invoiceDate || '',
       purchaseOrder: invoice.purchaseOrder || '',
+      grnReference: invoice.grnReference || '',
       currency: invoice.currency || '',
       invoiceSubtotal: typeof invoice.invoiceSubtotal === 'number' ? invoice.invoiceSubtotal : 0,
       totalTax: typeof invoice.totalTax === 'number' ? invoice.totalTax : 0,
@@ -438,12 +440,29 @@ export function normalizeInvoiceNumber(num: string | undefined | null): string {
 
 export function normalizeSupplierName(sup: string | undefined | null): string {
   if (!sup) return '';
-  return sup
+  let clean = sup
     .trim()
     .toLowerCase()
-    .replace(/[.,'"`()-]/g, ' ')
+    .replace(/[.,'"`()_\-\/]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Strip corporate suffixes
+  clean = clean
+    .replace(/\b(private limited|pte ltd|pte limited|pvt ltd|ltd|limited|inc|incorporated|corp|corporation|co|llc|plc)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return clean;
+}
+
+export function normalizeReference(ref: string | undefined | null): string {
+  if (!ref) return '';
+  return ref
+    .trim()
+    .toLowerCase()
+    .replace(/^(po|grn)\s*[\/\-_]?/i, '')
+    .replace(/[^a-z0-9]/g, '');
 }
 
 export function normalizeDateToYMD(dateStr?: string | null): string | null {
@@ -471,27 +490,54 @@ export function normalizeDateToYMD(dateStr?: string | null): string | null {
   return null;
 }
 
-export function compareLineItems(itemsA?: any[], itemsB?: any[]): number {
+function normalizeDescriptionWords(desc: string | undefined | null): string {
+  if (!desc) return '';
+  return desc
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(w => w.length > 0)
+    .sort()
+    .join(' ');
+}
+
+function computeDescSimilarity(descA: string, descB: string): number {
+  if (!descA || !descB) return 0;
+  const normA = normalizeDescriptionWords(descA);
+  const normB = normalizeDescriptionWords(descB);
+  if (normA === normB) return 1.0;
+
+  const setA = new Set(normA.split(' '));
+  const setB = new Set(normB.split(' '));
+  let intersection = 0;
+  setA.forEach(w => { if (setB.has(w)) intersection++; });
+  const union = new Set([...setA, ...setB]).size;
+  return union > 0 ? intersection / union : 0;
+}
+
+export function compareLineItemsRatio(itemsA?: any[], itemsB?: any[]): number {
   if (!itemsA || !itemsB || itemsA.length === 0 || itemsB.length === 0) {
     return 0;
   }
 
+  const maxLen = Math.max(itemsA.length, itemsB.length);
+  if (maxLen === 0) return 0;
+
   const normA = itemsA.map(item => ({
-    desc: (item.description || '').toLowerCase().replace(/[.,'"`()-]/g, ' ').replace(/\s+/g, ' ').trim(),
+    desc: item.description || '',
     qty: Number(item.quantity) || 0,
     price: Number(item.unitPrice) || 0,
     total: Number(item.totalAmount) || 0,
   }));
 
   const normB = itemsB.map(item => ({
-    desc: (item.description || '').toLowerCase().replace(/[.,'"`()-]/g, ' ').replace(/\s+/g, ' ').trim(),
+    desc: item.description || '',
     qty: Number(item.quantity) || 0,
     price: Number(item.unitPrice) || 0,
     total: Number(item.totalAmount) || 0,
   }));
-
-  const maxLen = Math.max(normA.length, normB.length);
-  if (maxLen === 0) return 0;
 
   const usedB = new Set<number>();
   let totalMatchScore = 0;
@@ -504,25 +550,12 @@ export function compareLineItems(itemsA?: any[], itemsB?: any[]): number {
       if (usedB.has(j)) continue;
       const b = normB[j];
 
-      let descScore = 0;
-      if (a.desc && b.desc && a.desc === b.desc) {
-        descScore = 1.0;
-      } else if (a.desc && b.desc) {
-        const tokensA = new Set(a.desc.split(' ').filter(t => t.length > 2));
-        const tokensB = new Set(b.desc.split(' ').filter(t => t.length > 2));
-        if (tokensA.size > 0 && tokensB.size > 0) {
-          let intersection = 0;
-          tokensA.forEach(t => { if (tokensB.has(t)) intersection++; });
-          const union = new Set([...tokensA, ...tokensB]).size;
-          descScore = intersection / union;
-        }
-      }
-
+      const descScore = computeDescSimilarity(a.desc, b.desc);
       const qtyMatch = Math.abs(a.qty - b.qty) <= 0.01 ? 1 : 0;
       const priceMatch = Math.abs(a.price - b.price) <= 0.02 ? 1 : 0;
       const totalMatch = Math.abs(a.total - b.total) <= 0.02 ? 1 : 0;
 
-      const itemScore = (descScore * 0.4) + (qtyMatch * 0.2) + (priceMatch * 0.2) + (totalMatch * 0.2);
+      const itemScore = (descScore * 0.40) + (qtyMatch * 0.20) + (priceMatch * 0.20) + (totalMatch * 0.20);
 
       if (itemScore > bestScore) {
         bestScore = itemScore;
@@ -530,37 +563,47 @@ export function compareLineItems(itemsA?: any[], itemsB?: any[]): number {
       }
     }
 
-    if (bestMatchIdx >= 0 && bestScore > 0.3) {
+    if (bestMatchIdx >= 0 && bestScore >= 0.30) {
       usedB.add(bestMatchIdx);
       totalMatchScore += bestScore;
     }
   }
 
-  const score = Math.round((totalMatchScore / maxLen) * 10);
-  return Math.min(10, Math.max(0, score));
+  return totalMatchScore / maxLen;
+}
+
+export function compareLineItems(itemsA?: any[], itemsB?: any[]): number {
+  const ratio = compareLineItemsRatio(itemsA, itemsB);
+  return Math.round(ratio * 25);
 }
 
 export interface SimilarityScoreBreakdown {
-  score: number; // 0-100
-  structuredScore?: number;
-  documentTextScore?: number;
-  availableWeight?: number;
-  matchedWeight?: number;
-  comparableDetailCount?: number;
-  invoiceNumberPoints: number; // 0 or 30
-  supplierNamePoints: number; // 0 or 15
-  invoiceDatePoints: number; // 0 or 10
-  poNumberPoints: number; // 0 or 10
-  currencyPoints: number; // 0 or 5
-  subtotalPoints: number; // 0 or 5
-  taxPoints: number; // 0 or 5
-  finalAmountPoints: number; // 0 or 10
-  lineItemsPoints: number; // 0 to 10
+  score: number; // 0-100 adjusted similarity score
+  adjustedScore: number;
+  availableWeight: number;
+  matchedWeight: number;
+  supplierNamePoints: number; // 0 or 20
+  invoiceDatePoints: number; // 0 or 15
+  poNumberPoints: number; // 0 or 20
+  grnNumberPoints: number; // 0 or 20
+  lineItemsPoints: number; // 0 to 25
+  supplierMatch: boolean;
+  dateMatch: boolean;
+  poMatch: boolean;
+  grnMatch: boolean;
+  lineItemSimilarityRatio: number; // 0.0 to 1.0
+  lineItemSimilarity: number; // 0 to 100%
+  hasSufficientEvidence: boolean;
+  // Backward compatibility fields
+  invoiceNumberPoints: number;
+  currencyPoints: number;
+  subtotalPoints: number;
+  taxPoints: number;
+  finalAmountPoints: number;
 }
 
 /**
  * Normalizes document text for whole-document duplicate comparison.
- * Normalizes capitalization, spacing, punctuation, date formats, and currency formatting.
  */
 export function normalizeDocumentText(text: string): string {
   if (!text) return '';
@@ -589,6 +632,7 @@ export function getNormalizedDocumentText(inv: any): string {
     if (inv.invoiceDate) parts.push(`Date ${inv.invoiceDate}`);
     if (inv.paymentDueDate) parts.push(`Due ${inv.paymentDueDate}`);
     if (inv.purchaseOrder) parts.push(`PO ${inv.purchaseOrder}`);
+    if (inv.grnReference) parts.push(`GRN ${inv.grnReference}`);
     if (inv.currency) parts.push(inv.currency);
     if (inv.invoiceSubtotal) parts.push(`Subtotal ${inv.invoiceSubtotal}`);
     if (inv.totalTax) parts.push(`Tax ${inv.totalTax}`);
@@ -647,25 +691,8 @@ export function computeTextSimilarity(text1: string, text2: string): number {
 export function computeInvoiceSimilarity(invA: any, invB: any): SimilarityScoreBreakdown {
   let matchedWeight = 0;
   let availableWeight = 0;
-  let comparableDetailCount = 0;
 
-  // 1. Invoice Number (30 pts)
-  const normNumA = normalizeInvoiceNumber(invA.invoiceNumber);
-  const normNumB = normalizeInvoiceNumber(invB.invoiceNumber);
-  const isNumAValid = normNumA !== '' && !isGenericValue(invA.invoiceNumber);
-  const isNumBValid = normNumB !== '' && !isGenericValue(invB.invoiceNumber);
-
-  let invoiceNumberPoints = 0;
-  if (isNumAValid && isNumBValid) {
-    availableWeight += 30;
-    comparableDetailCount += 1;
-    if (normNumA === normNumB) {
-      invoiceNumberPoints = 30;
-      matchedWeight += 30;
-    }
-  }
-
-  // 2. Supplier Name (15 pts)
+  // 1. Supplier / Company Comparison (20%)
   const normSupA = normalizeSupplierName(invA.supplierName);
   const normSupB = normalizeSupplierName(invB.supplierName);
   const isSupAValid = normSupA !== '' && !isGenericValue(invA.supplierName);
@@ -674,165 +701,120 @@ export function computeInvoiceSimilarity(invA: any, invB: any): SimilarityScoreB
   let supplierNamePoints = 0;
   let supplierMatch = false;
   if (isSupAValid && isSupBValid) {
-    availableWeight += 15;
+    availableWeight += 20;
     if (normSupA === normSupB) {
-      supplierNamePoints = 15;
-      matchedWeight += 15;
+      supplierNamePoints = 20;
+      matchedWeight += 20;
       supplierMatch = true;
-    } else {
-      const supSim = computeTextSimilarity(normSupA, normSupB);
-      if (supSim >= 80) {
-        supplierNamePoints = Math.round((supSim / 100) * 15);
-        matchedWeight += supplierNamePoints;
-        supplierMatch = true;
-      }
     }
   }
 
-  // 3. Invoice Date (10 pts)
+  // 2. Invoice Date Comparison (15%)
   const dateA = normalizeDateToYMD(invA.invoiceDate);
   const dateB = normalizeDateToYMD(invB.invoiceDate);
 
   let invoiceDatePoints = 0;
+  let dateMatch = false;
   if (dateA && dateB) {
-    availableWeight += 10;
-    comparableDetailCount += 1;
+    availableWeight += 15;
     if (dateA === dateB) {
-      invoiceDatePoints = 10;
-      matchedWeight += 10;
+      invoiceDatePoints = 15;
+      matchedWeight += 15;
+      dateMatch = true;
     }
   }
 
-  // 4. Purchase Order Number (10 pts)
+  // 3. Purchase Order (PO) Reference Comparison (20%)
   const poA = invA.purchaseOrder || invA.poNumber;
   const poB = invB.purchaseOrder || invB.poNumber;
-  const normPoA = normalizeInvoiceNumber(poA);
-  const normPoB = normalizeInvoiceNumber(poB);
+  const normPoA = normalizeReference(poA);
+  const normPoB = normalizeReference(poB);
   const isPoAValid = normPoA !== '' && !isGenericValue(poA);
   const isPoBValid = normPoB !== '' && !isGenericValue(poB);
 
   let poNumberPoints = 0;
+  let poMatch = false;
   if (isPoAValid && isPoBValid) {
-    availableWeight += 10;
-    comparableDetailCount += 1;
+    availableWeight += 20;
     if (normPoA === normPoB) {
-      poNumberPoints = 10;
-      matchedWeight += 10;
+      poNumberPoints = 20;
+      matchedWeight += 20;
+      poMatch = true;
     }
   }
 
-  // 5. Currency (5 pts)
-  const currA = (invA.currency || '').trim().toUpperCase();
-  const currB = (invB.currency || '').trim().toUpperCase();
+  // 4. Goods Receipt Note (GRN) Reference Comparison (20%)
+  const grnA = invA.grnReference;
+  const grnB = invB.grnReference;
+  const normGrnA = normalizeReference(grnA);
+  const normGrnB = normalizeReference(grnB);
+  const isGrnAValid = normGrnA !== '' && !isGenericValue(grnA);
+  const isGrnBValid = normGrnB !== '' && !isGenericValue(grnB);
 
-  let currencyPoints = 0;
-  if (currA !== '' && currB !== '' && !isGenericValue(currA) && !isGenericValue(currB)) {
-    availableWeight += 5;
-    if (currA === currB) {
-      currencyPoints = 5;
-      matchedWeight += 5;
+  let grnNumberPoints = 0;
+  let grnMatch = false;
+  if (isGrnAValid && isGrnBValid) {
+    availableWeight += 20;
+    if (normGrnA === normGrnB) {
+      grnNumberPoints = 20;
+      matchedWeight += 20;
+      grnMatch = true;
     }
   }
 
-  // 6. Subtotal (5 pts)
-  const subA = typeof invA.invoiceSubtotal === 'number' ? invA.invoiceSubtotal : (parseFloat(invA.invoiceSubtotal) || 0);
-  const subB = typeof invB.invoiceSubtotal === 'number' ? invB.invoiceSubtotal : (parseFloat(invB.invoiceSubtotal) || 0);
-
-  let subtotalPoints = 0;
-  if (subA > 0 && subB > 0) {
-    availableWeight += 5;
-    comparableDetailCount += 1;
-    if (Math.abs(subA - subB) <= 0.02) {
-      subtotalPoints = 5;
-      matchedWeight += 5;
-    }
-  }
-
-  // 7. Total Tax (5 pts)
-  const hasTaxA = invA.totalTax !== undefined && invA.totalTax !== null && invA.totalTax !== '';
-  const hasTaxB = invB.totalTax !== undefined && invB.totalTax !== null && invB.totalTax !== '';
-  const taxA = typeof invA.totalTax === 'number' ? invA.totalTax : (parseFloat(invA.totalTax) || 0);
-  const taxB = typeof invB.totalTax === 'number' ? invB.totalTax : (parseFloat(invB.totalTax) || 0);
-
-  let taxPoints = 0;
-  if (hasTaxA && hasTaxB && (taxA > 0 || taxB > 0)) {
-    availableWeight += 5;
-    comparableDetailCount += 1;
-    if (Math.abs(taxA - taxB) <= 0.02) {
-      taxPoints = 5;
-      matchedWeight += 5;
-    }
-  }
-
-  // 8. Final Amount Payable (10 pts)
-  const finalA = typeof invA.finalAmountPayable === 'number' ? invA.finalAmountPayable : (parseFloat(invA.finalAmountPayable) || 0);
-  const finalB = typeof invB.finalAmountPayable === 'number' ? invB.finalAmountPayable : (parseFloat(invB.finalAmountPayable) || 0);
-
-  let finalAmountPoints = 0;
-  if (finalA > 0 && finalB > 0) {
-    availableWeight += 10;
-    comparableDetailCount += 1;
-    if (Math.abs(finalA - finalB) <= 0.02) {
-      finalAmountPoints = 10;
-      matchedWeight += 10;
-    }
-  }
-
-  // 9. Line Items (10 pts)
+  // 5. Purchased Line Items Comparison (25%)
   const lineItemsA = invA.lineItems || invA.lineItemSignatures || [];
   const lineItemsB = invB.lineItems || invB.lineItemSignatures || [];
 
   let lineItemsPoints = 0;
+  let lineItemSimilarityRatio = 0;
+  let lineItemMatch = false;
+
   if (lineItemsA.length > 0 && lineItemsB.length > 0) {
-    availableWeight += 10;
-    comparableDetailCount += 1;
-    lineItemsPoints = compareLineItems(lineItemsA, lineItemsB);
+    availableWeight += 25;
+    lineItemSimilarityRatio = compareLineItemsRatio(lineItemsA, lineItemsB);
+    lineItemsPoints = Math.round(lineItemSimilarityRatio * 25 * 100) / 100;
     matchedWeight += lineItemsPoints;
+    if (lineItemSimilarityRatio >= 0.90) {
+      lineItemMatch = true;
+    }
   }
 
-  // Calculate structured score ratio based on available denominator
-  let structuredScore = 0;
+  let adjustedScore = 0;
   if (availableWeight > 0) {
-    structuredScore = Math.round((matchedWeight / availableWeight) * 100);
+    adjustedScore = Math.round((matchedWeight / availableWeight) * 100);
   }
 
-  // Requirement 3: Prevent weak incomplete records from creating false duplicates
-  const hasSufficientEvidence = supplierMatch && comparableDetailCount >= 3 && availableWeight >= 30;
+  const hasRefMatch = dateMatch || poMatch || grnMatch;
+  const hasSufficientEvidence = supplierMatch && lineItemMatch && hasRefMatch && availableWeight >= 40;
 
-  // Whole-document text comparison (Requirement 4)
-  const docTextA = getNormalizedDocumentText(invA);
-  const docTextB = getNormalizedDocumentText(invB);
-  let documentTextScore = 0;
-  if (docTextA.length >= 20 && docTextB.length >= 20) {
-    documentTextScore = computeTextSimilarity(docTextA, docTextB);
-  }
-
-  let score = 0;
-  if (hasSufficientEvidence) {
-    score = Math.max(structuredScore, documentTextScore);
-  } else if (documentTextScore >= 90) {
-    score = documentTextScore;
-  } else {
-    // Insufficient evidence and document text < 90%: default to raw unadjusted score
-    score = availableWeight > 0 ? Math.round((matchedWeight / 100) * 100) : 0;
+  let score = adjustedScore;
+  if (!hasSufficientEvidence && adjustedScore >= 90) {
+    score = Math.min(89, adjustedScore);
   }
 
   return {
-    score: Math.min(100, Math.max(0, score)),
-    structuredScore,
-    documentTextScore,
+    score,
+    adjustedScore,
     availableWeight,
     matchedWeight,
-    comparableDetailCount,
-    invoiceNumberPoints,
     supplierNamePoints,
     invoiceDatePoints,
     poNumberPoints,
-    currencyPoints,
-    subtotalPoints,
-    taxPoints,
-    finalAmountPoints,
-    lineItemsPoints
+    grnNumberPoints,
+    lineItemsPoints,
+    supplierMatch,
+    dateMatch,
+    poMatch,
+    grnMatch,
+    lineItemSimilarityRatio,
+    lineItemSimilarity: Math.round(lineItemSimilarityRatio * 100),
+    hasSufficientEvidence,
+    invoiceNumberPoints: 0,
+    currencyPoints: 0,
+    subtotalPoints: 0,
+    taxPoints: 0,
+    finalAmountPoints: 0
   };
 }
 
@@ -1030,6 +1012,8 @@ export function analyzeDuplicates(
       const targetSupplier = maxMatchType === 'historical' ? maxHistMatch?.supplierName : maxBatchMatch?.supplierName;
       const targetNum = maxMatchType === 'historical' ? maxHistMatch?.invoiceNumber : maxBatchMatch?.invoiceNumber;
 
+      const displayNum = targetNum && targetNum.trim() !== '' ? `Invoice ${targetNum}` : 'Invoice';
+
       results[inv.id] = {
         id: inv.id,
         isDuplicate: !decisionOverridden,
@@ -1040,7 +1024,7 @@ export function analyzeDuplicates(
         isPrimary: false,
         primaryId: maxBatchMatch?.id,
         matchType: maxMatchType,
-        reason: `Possible Duplicate – ${maxScore}% Similar to ${targetSupplier || 'invoice'} #${targetNum || ''}`,
+        reason: `Possible Duplicate – ${maxScore}% transaction match with ${targetSupplier || 'supplier'} ${displayNum}`,
         historicalMatch: maxHistMatch,
         batchMatch: maxBatchMatch,
         possibleMatchRecord: maxMatchType === 'historical' ? {

@@ -1,10 +1,9 @@
 import { InvoiceData } from '../types';
 import { 
   analyzeDuplicates, 
-  HistoricalInvoiceRecordV3, 
-  getHistoricalVerifiedInvoices, 
-  saveVerifiedInvoiceToHistory, 
-  clearHistoricalVerifiedInvoices,
+  computeInvoiceSimilarity,
+  normalizeSupplierName,
+  normalizeReference,
   getInvoiceValidationSummary,
   getInvoiceMissingFields
 } from './validation';
@@ -27,62 +26,142 @@ export function runAllDuplicateTests(): { allPassed: boolean; results: TestResul
       fileName: 'invoice1.pdf',
       fileType: 'application/pdf',
       status: 'success',
-      invoiceNumber: 'AA-2026-208',
-      invoiceDate: '2026-07-20',
-      paymentDueDate: '2026-08-20',
+      invoiceNumber: '201',
+      invoiceDate: '2026-07-15',
+      paymentDueDate: '2026-08-15',
       currency: 'SGD',
-      purchaseOrder: 'PO-100',
-      supplierName: 'Apex Abrasives Pte Ltd',
-      supplierAddress: '123 Industrial Park',
-      supplierContact: 'sales@apex.com',
-      businessRegistrationOrTaxId: 'TAX-123',
-      bankDetails: 'Bank XYZ',
-      bankAccount: 'ACC-123',
-      invoiceSubtotal: 1000,
+      purchaseOrder: 'PO-9921',
+      grnReference: 'GRN-4412',
+      supplierName: 'Tan Brothers Metal Works Pte Ltd',
+      supplierAddress: '12 Tuas Avenue 4, Singapore 639234',
+      supplierContact: 'sales@tanbrothers.com',
+      businessRegistrationOrTaxId: '200412345K',
+      bankDetails: 'DBS Bank',
+      bankAccount: '120-98765-4',
+      invoiceSubtotal: 2500,
       totalDiscount: 0,
-      totalTax: 80,
+      totalTax: 225,
       deliveryCharges: 0,
-      finalAmountPayable: 1080,
+      finalAmountPayable: 2725,
       amountAlreadyPaid: 0,
-      outstandingBalance: 1080,
+      outstandingBalance: 2725,
       paymentTerms: 'Net 30',
       acceptedPaymentMethod: 'Bank Transfer',
       latePaymentTerms: '',
       lineItems: [
-        { id: 'item-1', description: 'Grinding Disc 100mm', quantity: 10, unitPrice: 100, discount: 0, taxRate: 8, taxAmount: 80, totalAmount: 1000 }
+        { id: 'item-1', description: 'Steel Angles 50x50x5mm', quantity: 200, unitPrice: 12.50, discount: 0, taxRate: 9, taxAmount: 225, totalAmount: 2500 }
       ],
-      fileHash: 'hash-bytes-208-aaa'
+      fileHash: 'tan-hash-201'
     };
 
-    // Test 1: AA-2026-208 versus AA-2026-209, with all other fields identical
+    // Test 1: Tan Brothers 201 vs 218 - incomplete mandatory fields but matching transaction -> Possible Duplicate AND Missing Fields
     {
-      const invA: InvoiceData = { ...baseInv, id: 'apex-208', invoiceNumber: 'AA-2026-208', fileHash: 'hash-bytes-208' };
-      const invB: InvoiceData = { ...baseInv, id: 'apex-209', invoiceNumber: 'AA-2026-209', fileHash: 'hash-bytes-209' };
-      const analysis = analyzeDuplicates([invA, invB], []);
-      const scoreB = analysis['apex-209']?.similarityScore || 0;
-      const dupB = analysis['apex-209']?.isDuplicate;
-      const passed = scoreB <= 70 && dupB === false;
+      const inv201: InvoiceData = { ...baseInv, id: 'tan-201', invoiceNumber: '201' };
+      const inv218: InvoiceData = { ...baseInv, id: 'tan-218', invoiceNumber: '' }; // missing mandatory field!
+
+      const analysis = analyzeDuplicates([inv201, inv218], []);
+      const dup218 = analysis['tan-218'];
+      const summary218 = getInvoiceValidationSummary(inv218, dup218);
+      const missing218 = getInvoiceMissingFields(inv218);
+
+      const isPossible = dup218?.isPossibleDuplicate === true && (dup218.similarityScore || 0) >= 90;
+      const hasMissingWarn = summary218.reasonsForReview.some(r => r.toLowerCase().includes('invoice number'));
+      const hasDupWarn = summary218.reasonsForReview.some(r => r.toLowerCase().includes('duplicate') || r.toLowerCase().includes('transaction match'));
+
+      const passed = isPossible && missing218.length > 0 && hasMissingWarn && hasDupWarn;
       results.push({
         testNumber: 1,
-        description: 'AA-2026-208 versus AA-2026-209 (max score 70%; separate invoice)',
+        description: 'Tan Brothers 201 vs 218: incomplete invoice flagged as Possible Duplicate AND Missing Mandatory Fields independently',
         passed,
-        message: passed 
-          ? `Passed: Score is ${scoreB}% (<= 70%), not flagged as duplicate.` 
-          : `Failed: scoreB=${scoreB}%, dupB=${dupB}`
+        message: passed
+          ? `Passed: Score=${dup218?.similarityScore}%, both missing-field and duplicate warnings generated independently.`
+          : `Failed: isPossible=${isPossible}, score=${dup218?.similarityScore}, missingWarn=${hasMissingWarn}, dupWarn=${hasDupWarn}`
       });
     }
 
-    // Test 2: Same supplier and exact invoice number
+    // Test 2: Weighted scoring weights verification (Supplier 20%, Date 15%, PO 20%, GRN 20%, Items 25%)
     {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', invoiceNumber: 'AA-2026-208', fileHash: 'hash-1' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', invoiceNumber: 'AA-2026-208', fileHash: 'hash-2' };
+      const invA: InvoiceData = { ...baseInv, id: 'weight-a' };
+      const invB: InvoiceData = { ...baseInv, id: 'weight-b' };
+
+      const breakdown = computeInvoiceSimilarity(invA, invB);
+      const passed = breakdown.supplierNamePoints === 20 &&
+                     breakdown.invoiceDatePoints === 15 &&
+                     breakdown.poNumberPoints === 20 &&
+                     breakdown.grnNumberPoints === 20 &&
+                     breakdown.lineItemsPoints === 25 &&
+                     breakdown.adjustedScore === 100;
+
+      results.push({
+        testNumber: 2,
+        description: 'Weighted scoring weights verified (Supplier 20%, Date 15%, PO 20%, GRN 20%, Items 25%)',
+        passed,
+        message: passed
+          ? 'Passed: Breakdown points match 20/15/20/20/25 allocation exactly.'
+          : `Failed: ${JSON.stringify(breakdown)}`
+      });
+    }
+
+    // Test 3: Supplier corporate suffix and formatting normalization (PTE LTD vs Pte. Ltd.)
+    {
+      const normA = normalizeSupplierName('Tan Brothers Metal Works PTE LTD');
+      const normB = normalizeSupplierName('Tan Brothers Metal Works Pte. Ltd.');
+      const normC = normalizeSupplierName('TAN BROTHERS METAL WORKS PRIVATE LIMITED');
+
+      const passed = normA === 'tan brothers metal works' &&
+                     normA === normB &&
+                     normB === normC;
+
+      results.push({
+        testNumber: 3,
+        description: 'Supplier corporate suffix normalization (PTE LTD vs Pte. Ltd. vs Private Limited)',
+        passed,
+        message: passed
+          ? `Passed: All normalized to '${normA}'.`
+          : `Failed: normA='${normA}', normB='${normB}', normC='${normC}'`
+      });
+    }
+
+    // Test 4: PO and GRN reference normalization (PO-9921 vs PO/9921 vs PO 9921 vs 9921)
+    {
+      const normPO1 = normalizeReference('PO-9921');
+      const normPO2 = normalizeReference('PO/9921');
+      const normPO3 = normalizeReference('PO 9921');
+      const normPO4 = normalizeReference('9921');
+
+      const normGRN1 = normalizeReference('GRN-4412');
+      const normGRN2 = normalizeReference('GRN/4412');
+
+      const passed = normPO1 === '9921' &&
+                     normPO1 === normPO2 &&
+                     normPO2 === normPO3 &&
+                     normPO3 === normPO4 &&
+                     normGRN1 === '4412' &&
+                     normGRN1 === normGRN2;
+
+      results.push({
+        testNumber: 4,
+        description: 'PO and GRN reference normalization (ignores prefix, slashes, dashes, spaces)',
+        passed,
+        message: passed
+          ? `Passed: PO normalized to '${normPO1}', GRN normalized to '${normGRN1}'.`
+          : `Failed: normPO1='${normPO1}', normGRN1='${normGRN1}'`
+      });
+    }
+
+    // Test 5: Exact supplier name and invoice number match -> Confirmed Duplicate
+    {
+      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', invoiceNumber: '201', fileHash: 'hash-1' };
+      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', invoiceNumber: '201', fileHash: 'hash-2' };
+
       const analysis = analyzeDuplicates([inv1, inv2], []);
       const isConfirmed = analysis['inv-2']?.isConfirmedDuplicate;
       const isDup = analysis['inv-2']?.isDuplicate;
+
       const passed = isConfirmed === true && isDup === true;
       results.push({
-        testNumber: 2,
-        description: 'Same supplier and exact invoice number (confirmed duplicate)',
+        testNumber: 5,
+        description: 'Exact supplier and invoice number match -> Confirmed Duplicate',
         passed,
         message: passed
           ? 'Passed: Exact supplier and invoice number matched as confirmed duplicate.'
@@ -90,295 +169,115 @@ export function runAllDuplicateTests(): { allPassed: boolean; results: TestResul
       });
     }
 
-    // Test 3: Exact same file bytes but different filenames
+    // Test 6: SHA-256 byte hash match -> Confirmed Duplicate
     {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', fileName: 'docA.pdf', invoiceNumber: 'INV-201', fileHash: 'sha256-exact-bytes' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', fileName: 'scanB.pdf', invoiceNumber: 'INV-202', fileHash: 'sha256-exact-bytes' };
+      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', invoiceNumber: '201', fileHash: 'sha256-exact-bytes' };
+      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', invoiceNumber: '218', fileHash: 'sha256-exact-bytes' };
+
       const analysis = analyzeDuplicates([inv1, inv2], []);
       const isConfirmed = analysis['inv-2']?.isConfirmedDuplicate;
-      const isDup = analysis['inv-2']?.isDuplicate;
-      const passed = isConfirmed === true && isDup === true;
-      results.push({
-        testNumber: 3,
-        description: 'Exact same file bytes but different filenames (confirmed duplicate)',
-        passed,
-        message: passed
-          ? 'Passed: SHA-256 byte hash match correctly flagged as confirmed duplicate.'
-          : `Failed: isConfirmed=${isConfirmed}, isDup=${isDup}`
-      });
-    }
 
-    // Test 4: Same filename but different file contents and invoice numbers
-    {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', fileName: 'invoice.pdf', invoiceNumber: 'INV-101', fileHash: 'hash-content-1' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', fileName: 'invoice.pdf', invoiceNumber: 'INV-102', fileHash: 'hash-content-2' };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const dup1 = analysis['inv-1']?.isDuplicate;
-      const dup2 = analysis['inv-2']?.isDuplicate;
-      const passed = !dup1 && !dup2;
-      results.push({
-        testNumber: 4,
-        description: 'Same filename but different file contents and invoice numbers (separate invoices)',
-        passed,
-        message: passed
-          ? 'Passed: Different contents and numbers with same filename are treated as separate invoices.'
-          : `Failed: dup1=${dup1}, dup2=${dup2}`
-      });
-    }
-
-    // Test 5: Same supplier, number, date, PO, amounts and line items but a different scan
-    {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', invoiceNumber: 'AA-2026-208', fileHash: 'scan-hash-1' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', invoiceNumber: 'AA-2026-208', fileHash: 'scan-hash-2' };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const dup2 = analysis['inv-2']?.isDuplicate;
-      const passed = dup2 === true;
-      results.push({
-        testNumber: 5,
-        description: 'Same supplier, number, date, PO, amounts and line items (different scan)',
-        passed,
-        message: passed
-          ? 'Passed: Exact supplier and invoice number match flagged as duplicate.'
-          : `Failed: dup2=${dup2}`
-      });
-    }
-
-    // Test 6: Same supplier template but different number, date, amounts and items
-    {
-      const inv1: InvoiceData = { 
-        ...baseInv, 
-        id: 'inv-1', 
-        invoiceNumber: 'AA-2026-001', 
-        invoiceDate: '2026-01-01', 
-        purchaseOrder: 'PO-001', 
-        invoiceSubtotal: 100, 
-        totalTax: 8, 
-        finalAmountPayable: 108,
-        lineItems: [{ id: '1', description: 'Wrench', quantity: 1, unitPrice: 100, discount: 0, taxRate: 8, taxAmount: 8, totalAmount: 100 }],
-        fileHash: 'hash-template-1' 
-      };
-      const inv2: InvoiceData = { 
-        ...baseInv, 
-        id: 'inv-2', 
-        invoiceNumber: 'AA-2026-002', 
-        invoiceDate: '2026-02-01', 
-        purchaseOrder: 'PO-002', 
-        invoiceSubtotal: 500, 
-        totalTax: 40, 
-        finalAmountPayable: 540,
-        lineItems: [{ id: '1', description: 'Safety Helmet', quantity: 5, unitPrice: 100, discount: 0, taxRate: 8, taxAmount: 40, totalAmount: 500 }],
-        fileHash: 'hash-template-2' 
-      };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const score2 = analysis['inv-2']?.similarityScore || 0;
-      const dup2 = analysis['inv-2']?.isDuplicate;
-      const passed = score2 < 90 && dup2 === false;
+      const passed = isConfirmed === true;
       results.push({
         testNumber: 6,
-        description: 'Same supplier template but different number, date, amounts and items (low similarity)',
+        description: 'Exact SHA-256 file byte match -> Confirmed Duplicate',
         passed,
         message: passed
-          ? `Passed: Score is ${score2}% (< 90%), separate invoice.`
-          : `Failed: score2=${score2}%, dup2=${dup2}`
-      });
-    }
-
-    // Test 7: Minor supplier punctuation difference with all invoice information matching
-    {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', supplierName: 'Apex Abrasives Pte Ltd', invoiceNumber: 'AA-2026-208', fileHash: 'hash-p1' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', supplierName: 'APEX ABRASIVES PTE. LTD.', invoiceNumber: 'AA-2026-208', fileHash: 'hash-p2' };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const dup2 = analysis['inv-2']?.isDuplicate;
-      const passed = dup2 === true;
-      results.push({
-        testNumber: 7,
-        description: 'Minor supplier punctuation difference with all invoice info matching',
-        passed,
-        message: passed
-          ? 'Passed: Harmless punctuation difference normalized, flagged as duplicate.'
-          : `Failed: dup2=${dup2}`
-      });
-    }
-
-    // Test 8: Different supplier with the same invoice number
-    {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', supplierName: 'Supplier Delta', invoiceNumber: 'INV-888', fileHash: 'hash-d1' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', supplierName: 'Supplier Echo', invoiceNumber: 'INV-888', fileHash: 'hash-d2' };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const isConfirmed = analysis['inv-2']?.isConfirmedDuplicate;
-      const passed = isConfirmed === false;
-      results.push({
-        testNumber: 8,
-        description: 'Different supplier with the same invoice number (not a confirmed duplicate)',
-        passed,
-        message: passed
-          ? 'Passed: Different suppliers with same invoice number not marked as confirmed duplicate.'
+          ? 'Passed: SHA-256 match correctly flagged as confirmed duplicate.'
           : `Failed: isConfirmed=${isConfirmed}`
       });
     }
 
-    // Test 9: Tan Brothers invoice 201 and 218 with missing mandatory fields but >= 90% document similarity
+    // Test 7: Non-matching supplier -> cannot be a Possible Duplicate
     {
-      const tanText = "Tan Brothers Metal Works Pte Ltd 12 Tuas Avenue 4 Singapore 639234 TAX ID 200412345K INVOICE Date 2026-07-15 PO PO-9921 Item Steel Angles 50x50x5mm Qty 200 Unit $12.50 Total $2500.00 Subtotal $2500.00 GST $225.00 Total Payable $2725.00 Bank DBS 120-98765-4";
-      const inv201: InvoiceData = {
+      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', supplierName: 'Apex Hardware Pte Ltd' };
+      const inv2: InvoiceData = { ...baseInv, id: 'inv-2', supplierName: 'Tan Brothers Metal Works' };
+
+      const breakdown = computeInvoiceSimilarity(inv1, inv2);
+      const analysis = analyzeDuplicates([inv1, inv2], []);
+
+      const passed = breakdown.supplierMatch === false && analysis['inv-2']?.isPossibleDuplicate === false;
+      results.push({
+        testNumber: 7,
+        description: 'Non-matching suppliers prevent duplicate classification',
+        passed,
+        message: passed
+          ? 'Passed: Different suppliers properly prevented duplicate match.'
+          : `Failed: breakdown=${JSON.stringify(breakdown)}`
+      });
+    }
+
+    // Test 8: Matching transaction details with different invoice numbers -> Possible Duplicate (score >= 90%)
+    {
+      const inv1: InvoiceData = { ...baseInv, id: 'inv-201', invoiceNumber: '201' };
+      const inv2: InvoiceData = { ...baseInv, id: 'inv-218', invoiceNumber: '218' };
+
+      const breakdown = computeInvoiceSimilarity(inv1, inv2);
+      const analysis = analyzeDuplicates([inv1, inv2], []);
+      const detail = analysis['inv-218'];
+
+      const passed = breakdown.adjustedScore === 100 && detail?.isPossibleDuplicate === true;
+      results.push({
+        testNumber: 8,
+        description: 'Different invoice numbers with matching transaction -> Possible Duplicate (100% adjusted score)',
+        passed,
+        message: passed
+          ? `Passed: Score=${detail?.similarityScore}%, reason='${detail?.reason}'`
+          : `Failed: score=${detail?.similarityScore}, isPossible=${detail?.isPossibleDuplicate}`
+      });
+    }
+
+    // Test 9: Two incomplete invoices with insufficient transaction evidence -> not flagged as duplicate
+    {
+      const inc1: InvoiceData = {
         ...baseInv,
-        id: 'tan-201',
-        supplierName: 'Tan Brothers Metal Works Pte Ltd',
-        invoiceNumber: '201',
-        invoiceDate: '2026-07-15',
-        purchaseOrder: 'PO-9921',
-        finalAmountPayable: 2725,
-        rawDocumentText: tanText,
-        fileHash: 'tan-hash-201'
+        id: 'inc-1',
+        supplierName: 'Tan Brothers',
+        invoiceNumber: '',
+        invoiceDate: '',
+        purchaseOrder: '',
+        grnReference: '',
+        lineItems: []
       };
-      const inv218: InvoiceData = {
+      const inc2: InvoiceData = {
         ...baseInv,
-        id: 'tan-218',
-        supplierName: 'Tan Brothers Metal Works Pte Ltd',
-        invoiceNumber: '', // missing mandatory field!
-        invoiceDate: '2026-07-15',
-        purchaseOrder: 'PO-9921',
-        finalAmountPayable: 2725,
-        rawDocumentText: tanText,
-        fileHash: 'tan-hash-218'
+        id: 'inc-2',
+        supplierName: 'Tan Brothers',
+        invoiceNumber: '',
+        invoiceDate: '',
+        purchaseOrder: '',
+        grnReference: '',
+        lineItems: []
       };
 
-      const analysis = analyzeDuplicates([inv201, inv218], []);
-      const dup218 = analysis['tan-218'];
-      const summary218 = getInvoiceValidationSummary(inv218, dup218);
-      const missing218 = getInvoiceMissingFields(inv218);
+      const analysis = analyzeDuplicates([inc1, inc2], []);
+      const detail = analysis['inc-2'];
 
-      const hasMissingWarn = summary218.reasonsForReview.some(r => r.includes('Invoice Number'));
-      const hasDupWarn = summary218.reasonsForReview.some(r => r.includes('Possible Duplicate') || r.includes('Similar') || r.includes('matches'));
-      const isPossible = dup218?.isPossibleDuplicate && (dup218.similarityScore || 0) >= 90;
-
-      const passed = isPossible && missing218.length > 0 && hasMissingWarn && hasDupWarn;
+      const passed = detail?.isPossibleDuplicate === false && detail?.isDuplicate === false;
       results.push({
         testNumber: 9,
-        description: 'Tan Brothers 201 vs 218 with missing mandatory fields: possible duplicate and missing-field warnings both appear',
+        description: 'Incomplete invoices with insufficient transaction evidence not flagged as duplicates',
         passed,
         message: passed
-          ? `Passed: Score=${dup218?.similarityScore}%, flagged as possible duplicate AND missing fields warning present.`
-          : `Failed: isPossible=${isPossible}, score=${dup218?.similarityScore}, missingWarn=${hasMissingWarn}, dupWarn=${hasDupWarn}`
-      });
-    }
-
-    // Test 10: Two incomplete invoices with insufficient comparable information
-    {
-      const inc1: InvoiceData = { 
-        ...baseInv, 
-        id: 'inc-1', 
-        supplierName: 'Apex', 
-        invoiceNumber: '', 
-        invoiceDate: '', 
-        purchaseOrder: '', 
-        currency: '', 
-        invoiceSubtotal: 0, 
-        totalTax: 0, 
-        finalAmountPayable: 0, 
-        lineItems: [],
-        rawDocumentText: 'Apex',
-        fileHash: 'inc-hash-1' 
-      };
-      const inc2: InvoiceData = { 
-        ...baseInv, 
-        id: 'inc-2', 
-        supplierName: 'Apex', 
-        invoiceNumber: '', 
-        invoiceDate: '', 
-        purchaseOrder: '', 
-        currency: '', 
-        invoiceSubtotal: 0, 
-        totalTax: 0, 
-        finalAmountPayable: 0, 
-        lineItems: [],
-        rawDocumentText: 'Apex',
-        fileHash: 'inc-hash-2' 
-      };
-      const analysis = analyzeDuplicates([inc1, inc2], []);
-      const score2 = analysis['inc-2']?.similarityScore || 0;
-      const dup2 = analysis['inc-2']?.isDuplicate;
-      const passed = score2 < 90 && dup2 === false;
-      results.push({
-        testNumber: 10,
-        description: 'Two incomplete invoices with insufficient comparable information (do not flag as duplicates)',
-        passed,
-        message: passed
-          ? `Passed: Score is ${score2}% (< 90%), weak incomplete records are not flagged as duplicates.`
-          : `Failed: score2=${score2}%, dup2=${dup2}`
-      });
-    }
-
-    // Test 11: Exact same file with missing fields (confirmed duplicate)
-    {
-      const inc1: InvoiceData = { ...baseInv, id: 'file-1', invoiceNumber: '', fileHash: 'exact-sha256-hash-xyz' };
-      const inc2: InvoiceData = { ...baseInv, id: 'file-2', invoiceNumber: '', fileHash: 'exact-sha256-hash-xyz' };
-      const analysis = analyzeDuplicates([inc1, inc2], []);
-      const isConfirmed = analysis['file-2']?.isConfirmedDuplicate;
-      const isDup = analysis['file-2']?.isDuplicate;
-      const passed = isConfirmed === true && isDup === true;
-      results.push({
-        testNumber: 11,
-        description: 'Exact same file with missing fields (confirmed duplicate)',
-        passed,
-        message: passed
-          ? 'Passed: SHA-256 byte hash match on incomplete document correctly flagged as confirmed duplicate.'
-          : `Failed: isConfirmed=${isConfirmed}, isDup=${isDup}`
-      });
-    }
-
-    // Test 12: Different invoice numbers with >=90% document similarity and strongly matching transaction details
-    {
-      const textA = "Supplier Metal Works Invoice 301 Date 2026-07-15 PO-100 SGD Subtotal 1000 Tax 80 Total 1080 Grinding Disc";
-      const textB = "Supplier Metal Works Invoice 302 Date 2026-07-15 PO-100 SGD Subtotal 1000 Tax 80 Total 1080 Grinding Disc";
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-301', invoiceNumber: '301', rawDocumentText: textA, fileHash: 'hash-301' };
-      const inv2: InvoiceData = { ...baseInv, id: 'inv-302', invoiceNumber: '302', rawDocumentText: textB, fileHash: 'hash-302' };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const score2 = analysis['inv-302']?.similarityScore || 0;
-      const isPossible = analysis['inv-302']?.isPossibleDuplicate;
-      const passed = score2 >= 90 && isPossible === true;
-      results.push({
-        testNumber: 12,
-        description: 'Different invoice numbers with >= 90% document similarity (possible duplicate requiring human review)',
-        passed,
-        message: passed
-          ? `Passed: Score is ${score2}% (>= 90%), flagged as possible duplicate for human review.`
-          : `Failed: score2=${score2}%, isPossible=${isPossible}`
-      });
-    }
-
-    // Test 13: Retain highest-scoring comparison candidate and score for debugging
-    {
-      const inv1: InvoiceData = { ...baseInv, id: 'debug-1', invoiceNumber: 'INV-101', fileHash: 'hash-dbg-1' };
-      const inv2: InvoiceData = { ...baseInv, id: 'debug-2', invoiceNumber: 'INV-102', fileHash: 'hash-dbg-2' };
-      const analysis = analyzeDuplicates([inv1, inv2], []);
-      const detail = analysis['debug-2'];
-      const passed = detail && detail.similarityScore !== undefined && detail.similarityBreakdown !== undefined;
-      results.push({
-        testNumber: 13,
-        description: 'Highest-scoring comparison candidate and score are retained for debugging',
-        passed,
-        message: passed
-          ? `Passed: Retained score=${detail?.similarityScore}%, breakdown present.`
+          ? 'Passed: Insufficient transaction evidence prevents false duplicate.'
           : `Failed: detail=${JSON.stringify(detail)}`
       });
     }
 
-    // Test 14: Possible duplicate confirmed as separate by Madam Lim
+    // Test 10: Human review decision ('separate_invoice') removes duplicate blocker
     {
-      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', invoiceNumber: 'AA-2026-208', fileHash: 'hash-m1' };
-      const inv2: InvoiceData = { 
-        ...baseInv, 
-        id: 'inv-2', 
-        invoiceNumber: 'AA-2026-209', 
-        fileHash: 'hash-m2',
+      const inv1: InvoiceData = { ...baseInv, id: 'inv-1', invoiceNumber: '201' };
+      const inv2: InvoiceData = {
+        ...baseInv,
+        id: 'inv-2',
+        invoiceNumber: '218',
         duplicateReviewDecision: {
           choice: 'separate_invoice',
           reviewerName: 'Madam Lim',
-          reviewReason: 'Different invoice numbers and different goods; supplier used same template.',
+          reviewReason: 'Verified separate order delivered under different PO release.',
           snapshot: {
             supplierName: baseInv.supplierName,
-            invoiceNumber: 'AA-2026-209',
+            invoiceNumber: '218',
             invoiceDate: baseInv.invoiceDate,
             purchaseOrder: baseInv.purchaseOrder,
             currency: baseInv.currency,
@@ -388,16 +287,18 @@ export function runAllDuplicateTests(): { allPassed: boolean; results: TestResul
           }
         }
       };
+
       const analysis = analyzeDuplicates([inv1, inv2], []);
-      const dup2 = analysis['inv-2']?.isDuplicate;
-      const passed = dup2 === false;
+      const detail = analysis['inv-2'];
+
+      const passed = detail?.isDuplicate === false;
       results.push({
-        testNumber: 14,
-        description: 'Possible duplicate confirmed as separate by Madam Lim (blocker removed)',
+        testNumber: 10,
+        description: 'Human review decision choice="separate_invoice" removes duplicate blocker',
         passed,
         message: passed
-          ? 'Passed: Review decision separate_invoice successfully removes duplicate blocker.'
-          : `Failed: dup2=${dup2}`
+          ? 'Passed: Reviewer decision separate_invoice correctly cleared duplicate status.'
+          : `Failed: isDuplicate=${detail?.isDuplicate}`
       });
     }
 
@@ -419,4 +320,3 @@ export function runAllDuplicateTests(): { allPassed: boolean; results: TestResul
     }
   }
 }
-

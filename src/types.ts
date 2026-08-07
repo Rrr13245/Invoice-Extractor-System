@@ -75,6 +75,7 @@ export interface InvoiceData {
   paymentDueDate: string;
   currency: string;
   purchaseOrder: string;
+  grnReference?: string; // Optional internal Goods Receipt Note reference
   supplierName: string;
   supplierAddress: string;
   supplierContact: string;

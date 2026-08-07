@@ -147,6 +147,7 @@ If a field is not found anywhere in the invoice, leave it as an empty string (fo
             paymentDueDate: { type: Type.STRING, description: "The deadline for payment (usually YYYY-MM-DD or as written)." },
             currency: { type: Type.STRING, description: "The currency code or symbol used (e.g., SGD, USD, EUR, GBP, $, S$, €). Empty string if unclear." },
             purchaseOrder: { type: Type.STRING, description: "The purchase order (PO) number if mentioned, otherwise empty." },
+            grnReference: { type: Type.STRING, description: "The Goods Receipt Note (GRN) or Delivery Order (DO) reference if mentioned on document, otherwise empty." },
             supplierName: { type: Type.STRING, description: "The company or individual name of the supplier/sender as printed on document." },
             supplierAddress: { type: Type.STRING, description: "The full address of the supplier." },
             supplierContact: { type: Type.STRING, description: "Contact details of the supplier (phone, email, website, etc.)." },
