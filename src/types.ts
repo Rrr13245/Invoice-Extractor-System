@@ -67,6 +67,7 @@ export interface InvoiceData {
   fileFingerprint?: string;
   fileHash?: string; // Cryptographic SHA-256 hash of uploaded file content
   validationStatus?: InvoiceValidationStatus;
+  rawDocumentText?: string; // Internal unexported readable document text for duplicate analysis
 
   // Extracted Fields:
   invoiceNumber: string;

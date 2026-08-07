@@ -67,7 +67,12 @@ export function getInvoiceMissingFields(invoice: InvoiceData): string[] {
     missing.push('Accepted Payment Method');
   }
 
-  // 12. Line Items Validation
+  // 12. Bank Account Number / IBAN
+  if (!invoice.bankAccount || invoice.bankAccount.trim() === '') {
+    missing.push('Bank Account Number / IBAN');
+  }
+
+  // 13. Line Items Validation
   if (!invoice.lineItems || invoice.lineItems.length === 0) {
     missing.push('Line Items (List is empty)');
   } else {
@@ -537,6 +542,11 @@ export function compareLineItems(itemsA?: any[], itemsB?: any[]): number {
 
 export interface SimilarityScoreBreakdown {
   score: number; // 0-100
+  structuredScore?: number;
+  documentTextScore?: number;
+  availableWeight?: number;
+  matchedWeight?: number;
+  comparableDetailCount?: number;
   invoiceNumberPoints: number; // 0 or 30
   supplierNamePoints: number; // 0 or 15
   invoiceDatePoints: number; // 0 or 10
@@ -548,39 +558,152 @@ export interface SimilarityScoreBreakdown {
   lineItemsPoints: number; // 0 to 10
 }
 
+/**
+ * Normalizes document text for whole-document duplicate comparison.
+ * Normalizes capitalization, spacing, punctuation, date formats, and currency formatting.
+ */
+export function normalizeDocumentText(text: string): string {
+  if (!text) return '';
+  return text
+    .toLowerCase()
+    .replace(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/g, ' date_token ')
+    .replace(/\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/g, ' date_token ')
+    .replace(/[$€£SgdsgdS$]+/gi, ' currency_token ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Gets or constructs normalized readable document text from an invoice.
+ */
+export function getNormalizedDocumentText(inv: any): string {
+  let rawText = (inv.rawDocumentText || '').trim();
+  if (!rawText) {
+    const parts: string[] = [];
+    if (inv.supplierName) parts.push(inv.supplierName);
+    if (inv.supplierAddress) parts.push(inv.supplierAddress);
+    if (inv.supplierContact) parts.push(inv.supplierContact);
+    if (inv.businessRegistrationOrTaxId) parts.push(inv.businessRegistrationOrTaxId);
+    if (inv.invoiceNumber) parts.push(`Invoice ${inv.invoiceNumber}`);
+    if (inv.invoiceDate) parts.push(`Date ${inv.invoiceDate}`);
+    if (inv.paymentDueDate) parts.push(`Due ${inv.paymentDueDate}`);
+    if (inv.purchaseOrder) parts.push(`PO ${inv.purchaseOrder}`);
+    if (inv.currency) parts.push(inv.currency);
+    if (inv.invoiceSubtotal) parts.push(`Subtotal ${inv.invoiceSubtotal}`);
+    if (inv.totalTax) parts.push(`Tax ${inv.totalTax}`);
+    if (inv.finalAmountPayable) parts.push(`Total ${inv.finalAmountPayable}`);
+    if (inv.bankDetails) parts.push(inv.bankDetails);
+    if (inv.bankAccount) parts.push(inv.bankAccount);
+    if (inv.paymentTerms) parts.push(inv.paymentTerms);
+    if (inv.lineItems && inv.lineItems.length > 0) {
+      inv.lineItems.forEach((item: any) => {
+        parts.push(`${item.description || ''} ${item.quantity || ''} ${item.unitPrice || ''} ${item.totalAmount || ''}`);
+      });
+    }
+    rawText = parts.join(' ');
+  }
+  return normalizeDocumentText(rawText);
+}
+
+/**
+ * Calculates string/document similarity percentage (0-100) using character trigram Dice coefficient.
+ */
+export function computeTextSimilarity(text1: string, text2: string): number {
+  if (!text1 || !text2) return 0;
+  if (text1 === text2) return 100;
+
+  const getTrigrams = (str: string): Map<string, number> => {
+    const map = new Map<string, number>();
+    const padded = `  ${str}  `;
+    for (let i = 0; i < padded.length - 2; i++) {
+      const gram = padded.substring(i, i + 3);
+      map.set(gram, (map.get(gram) || 0) + 1);
+    }
+    return map;
+  };
+
+  const grams1 = getTrigrams(text1);
+  const grams2 = getTrigrams(text2);
+
+  let intersection = 0;
+  let total1 = 0;
+  grams1.forEach((count1, gram) => {
+    total1 += count1;
+    const count2 = grams2.get(gram) || 0;
+    intersection += Math.min(count1, count2);
+  });
+
+  let total2 = 0;
+  grams2.forEach((count2) => {
+    total2 += count2;
+  });
+
+  if (total1 + total2 === 0) return 0;
+  const dice = (2 * intersection) / (total1 + total2);
+  return Math.round(dice * 100);
+}
+
 export function computeInvoiceSimilarity(invA: any, invB: any): SimilarityScoreBreakdown {
-  // 1. Complete invoice number (30 pts)
+  let matchedWeight = 0;
+  let availableWeight = 0;
+  let comparableDetailCount = 0;
+
+  // 1. Invoice Number (30 pts)
   const normNumA = normalizeInvoiceNumber(invA.invoiceNumber);
   const normNumB = normalizeInvoiceNumber(invB.invoiceNumber);
   const isNumAValid = normNumA !== '' && !isGenericValue(invA.invoiceNumber);
   const isNumBValid = normNumB !== '' && !isGenericValue(invB.invoiceNumber);
 
   let invoiceNumberPoints = 0;
-  if (isNumAValid && isNumBValid && normNumA === normNumB) {
-    invoiceNumberPoints = 30;
+  if (isNumAValid && isNumBValid) {
+    availableWeight += 30;
+    comparableDetailCount += 1;
+    if (normNumA === normNumB) {
+      invoiceNumberPoints = 30;
+      matchedWeight += 30;
+    }
   }
 
-  // 2. Supplier name (15 pts)
+  // 2. Supplier Name (15 pts)
   const normSupA = normalizeSupplierName(invA.supplierName);
   const normSupB = normalizeSupplierName(invB.supplierName);
   const isSupAValid = normSupA !== '' && !isGenericValue(invA.supplierName);
   const isSupBValid = normSupB !== '' && !isGenericValue(invB.supplierName);
 
   let supplierNamePoints = 0;
-  if (isSupAValid && isSupBValid && normSupA === normSupB) {
-    supplierNamePoints = 15;
+  let supplierMatch = false;
+  if (isSupAValid && isSupBValid) {
+    availableWeight += 15;
+    if (normSupA === normSupB) {
+      supplierNamePoints = 15;
+      matchedWeight += 15;
+      supplierMatch = true;
+    } else {
+      const supSim = computeTextSimilarity(normSupA, normSupB);
+      if (supSim >= 80) {
+        supplierNamePoints = Math.round((supSim / 100) * 15);
+        matchedWeight += supplierNamePoints;
+        supplierMatch = true;
+      }
+    }
   }
 
-  // 3. Invoice date (10 pts)
+  // 3. Invoice Date (10 pts)
   const dateA = normalizeDateToYMD(invA.invoiceDate);
   const dateB = normalizeDateToYMD(invB.invoiceDate);
 
   let invoiceDatePoints = 0;
-  if (dateA && dateB && dateA === dateB) {
-    invoiceDatePoints = 10;
+  if (dateA && dateB) {
+    availableWeight += 10;
+    comparableDetailCount += 1;
+    if (dateA === dateB) {
+      invoiceDatePoints = 10;
+      matchedWeight += 10;
+    }
   }
 
-  // 4. Purchase order number (10 pts)
+  // 4. Purchase Order Number (10 pts)
   const poA = invA.purchaseOrder || invA.poNumber;
   const poB = invB.purchaseOrder || invB.poNumber;
   const normPoA = normalizeInvoiceNumber(poA);
@@ -589,8 +712,13 @@ export function computeInvoiceSimilarity(invA: any, invB: any): SimilarityScoreB
   const isPoBValid = normPoB !== '' && !isGenericValue(poB);
 
   let poNumberPoints = 0;
-  if (isPoAValid && isPoBValid && normPoA === normPoB) {
-    poNumberPoints = 10;
+  if (isPoAValid && isPoBValid) {
+    availableWeight += 10;
+    comparableDetailCount += 1;
+    if (normPoA === normPoB) {
+      poNumberPoints = 10;
+      matchedWeight += 10;
+    }
   }
 
   // 5. Currency (5 pts)
@@ -598,55 +726,104 @@ export function computeInvoiceSimilarity(invA: any, invB: any): SimilarityScoreB
   const currB = (invB.currency || '').trim().toUpperCase();
 
   let currencyPoints = 0;
-  if (currA !== '' && currB !== '' && currA === currB && !isGenericValue(currA)) {
-    currencyPoints = 5;
+  if (currA !== '' && currB !== '' && !isGenericValue(currA) && !isGenericValue(currB)) {
+    availableWeight += 5;
+    if (currA === currB) {
+      currencyPoints = 5;
+      matchedWeight += 5;
+    }
   }
 
   // 6. Subtotal (5 pts)
   const subA = typeof invA.invoiceSubtotal === 'number' ? invA.invoiceSubtotal : (parseFloat(invA.invoiceSubtotal) || 0);
   const subB = typeof invB.invoiceSubtotal === 'number' ? invB.invoiceSubtotal : (parseFloat(invB.invoiceSubtotal) || 0);
-  const hasSubA = Boolean(invA.invoiceSubtotal !== undefined && invA.invoiceSubtotal !== null && invA.invoiceSubtotal !== '');
-  const hasSubB = Boolean(invB.invoiceSubtotal !== undefined && invB.invoiceSubtotal !== null && invB.invoiceSubtotal !== '');
 
   let subtotalPoints = 0;
-  if (hasSubA && hasSubB && subA > 0 && subB > 0 && Math.abs(subA - subB) <= 0.02) {
-    subtotalPoints = 5;
+  if (subA > 0 && subB > 0) {
+    availableWeight += 5;
+    comparableDetailCount += 1;
+    if (Math.abs(subA - subB) <= 0.02) {
+      subtotalPoints = 5;
+      matchedWeight += 5;
+    }
   }
 
   // 7. Total Tax (5 pts)
+  const hasTaxA = invA.totalTax !== undefined && invA.totalTax !== null && invA.totalTax !== '';
+  const hasTaxB = invB.totalTax !== undefined && invB.totalTax !== null && invB.totalTax !== '';
   const taxA = typeof invA.totalTax === 'number' ? invA.totalTax : (parseFloat(invA.totalTax) || 0);
   const taxB = typeof invB.totalTax === 'number' ? invB.totalTax : (parseFloat(invB.totalTax) || 0);
-  const hasTaxA = Boolean(invA.totalTax !== undefined && invA.totalTax !== null && invA.totalTax !== '');
-  const hasTaxB = Boolean(invB.totalTax !== undefined && invB.totalTax !== null && invB.totalTax !== '');
 
   let taxPoints = 0;
-  if (hasTaxA && hasTaxB && Math.abs(taxA - taxB) <= 0.02) {
-    taxPoints = 5;
+  if (hasTaxA && hasTaxB && (taxA > 0 || taxB > 0)) {
+    availableWeight += 5;
+    comparableDetailCount += 1;
+    if (Math.abs(taxA - taxB) <= 0.02) {
+      taxPoints = 5;
+      matchedWeight += 5;
+    }
   }
 
   // 8. Final Amount Payable (10 pts)
   const finalA = typeof invA.finalAmountPayable === 'number' ? invA.finalAmountPayable : (parseFloat(invA.finalAmountPayable) || 0);
   const finalB = typeof invB.finalAmountPayable === 'number' ? invB.finalAmountPayable : (parseFloat(invB.finalAmountPayable) || 0);
-  const hasFinalA = Boolean(invA.finalAmountPayable !== undefined && invA.finalAmountPayable !== null && invA.finalAmountPayable !== '');
-  const hasFinalB = Boolean(invB.finalAmountPayable !== undefined && invB.finalAmountPayable !== null && invB.finalAmountPayable !== '');
 
   let finalAmountPoints = 0;
-  if (hasFinalA && hasFinalB && finalA > 0 && finalB > 0 && Math.abs(finalA - finalB) <= 0.02) {
-    finalAmountPoints = 10;
+  if (finalA > 0 && finalB > 0) {
+    availableWeight += 10;
+    comparableDetailCount += 1;
+    if (Math.abs(finalA - finalB) <= 0.02) {
+      finalAmountPoints = 10;
+      matchedWeight += 10;
+    }
   }
 
   // 9. Line Items (10 pts)
   const lineItemsA = invA.lineItems || invA.lineItemSignatures || [];
   const lineItemsB = invB.lineItems || invB.lineItemSignatures || [];
 
-  let lineItemsPoints = compareLineItems(lineItemsA, lineItemsB);
+  let lineItemsPoints = 0;
+  if (lineItemsA.length > 0 && lineItemsB.length > 0) {
+    availableWeight += 10;
+    comparableDetailCount += 1;
+    lineItemsPoints = compareLineItems(lineItemsA, lineItemsB);
+    matchedWeight += lineItemsPoints;
+  }
 
-  const score = invoiceNumberPoints + supplierNamePoints + invoiceDatePoints +
-    poNumberPoints + currencyPoints + subtotalPoints + taxPoints +
-    finalAmountPoints + lineItemsPoints;
+  // Calculate structured score ratio based on available denominator
+  let structuredScore = 0;
+  if (availableWeight > 0) {
+    structuredScore = Math.round((matchedWeight / availableWeight) * 100);
+  }
+
+  // Requirement 3: Prevent weak incomplete records from creating false duplicates
+  const hasSufficientEvidence = supplierMatch && comparableDetailCount >= 3 && availableWeight >= 30;
+
+  // Whole-document text comparison (Requirement 4)
+  const docTextA = getNormalizedDocumentText(invA);
+  const docTextB = getNormalizedDocumentText(invB);
+  let documentTextScore = 0;
+  if (docTextA.length >= 20 && docTextB.length >= 20) {
+    documentTextScore = computeTextSimilarity(docTextA, docTextB);
+  }
+
+  let score = 0;
+  if (hasSufficientEvidence) {
+    score = Math.max(structuredScore, documentTextScore);
+  } else if (documentTextScore >= 90) {
+    score = documentTextScore;
+  } else {
+    // Insufficient evidence and document text < 90%: default to raw unadjusted score
+    score = availableWeight > 0 ? Math.round((matchedWeight / 100) * 100) : 0;
+  }
 
   return {
     score: Math.min(100, Math.max(0, score)),
+    structuredScore,
+    documentTextScore,
+    availableWeight,
+    matchedWeight,
+    comparableDetailCount,
     invoiceNumberPoints,
     supplierNamePoints,
     invoiceDatePoints,
@@ -728,7 +905,6 @@ export function analyzeDuplicates(
 
   for (const inv of invoices) {
     if (inv.isDuplicateDismissed) continue;
-    if (inv.status !== 'success') continue;
 
     const normNumInv = normalizeInvoiceNumber(inv.invoiceNumber);
     const normSupInv = normalizeSupplierName(inv.supplierName);
@@ -783,7 +959,6 @@ export function analyzeDuplicates(
 
     for (const otherInv of invoices) {
       if (otherInv.id === inv.id) continue;
-      if (otherInv.status !== 'success') continue;
 
       const normNumOther = normalizeInvoiceNumber(otherInv.invoiceNumber);
       const normSupOther = normalizeSupplierName(otherInv.supplierName);
@@ -840,7 +1015,6 @@ export function analyzeDuplicates(
 
     for (const otherInv of invoices) {
       if (otherInv.id === inv.id) continue;
-      if (otherInv.status !== 'success') continue;
 
       const breakdown = computeInvoiceSimilarity(inv, otherInv);
       if (breakdown.score > maxScore) {
@@ -1059,8 +1233,8 @@ export function getInvoiceValidationSummary(
     }
   }
 
-  // Duplicate path
-  if (isDup) {
+  // Duplicate path (when duplicate is the sole reason)
+  if (isDup && reasons.length === 1) {
     return {
       status: 'duplicate',
       statusLabel: 'Duplicate Invoice',

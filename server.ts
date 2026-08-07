@@ -128,6 +128,7 @@ CRITICAL INSTRUCTIONS FOR ACCURACY & TRUTHFUL EXTRACTION:
 4. Currency: Extract the currency code or symbol (e.g., SGD, USD, EUR, GBP, AUD, $, S$, €). If currency is not explicitly found, leave \`currency\` as an empty string "".
 5. Payment Terms: Pay extra special attention to fine print, footers, headers, margin notes, and sections labeled 'Terms & Conditions', 'Terms of Payment', 'Terms of Sale', 'Notes', or 'Remittance Instructions'. Extract terms (e.g., 'Net 30', 'Net 15', 'Due on Receipt', '2% 10 Net 30', 'COD') into \`paymentTerms\` and late fees into \`latePaymentTerms\`. If not explicitly stated in document, leave as "".
 6. AI Review Notes: Provide structured plain-language review notes in \`aiReviewNotes\` detailing what was found printed on the document vs calculated vs suggested vs missing.
+7. Raw Document Text: Extract a readable text transcript of all visible text and details across the document into \`rawDocumentText\` for internal duplicate analysis.
 
 If a field is not found anywhere in the invoice, leave it as an empty string (for strings) or 0 (for numbers). Make sure to extract all line items accurately. Ensure that sums are mathematically consistent.`
     };
@@ -162,6 +163,7 @@ If a field is not found anywhere in the invoice, leave it as an empty string (fo
             paymentTerms: { type: Type.STRING, description: "Payment terms stated in fine print, footers, or Terms & Conditions blocks." },
             acceptedPaymentMethod: { type: Type.STRING, description: "Accepted payment methods (e.g., Bank Transfer, Credit Card, PayPal, Check)." },
             latePaymentTerms: { type: Type.STRING, description: "Any fees, interest rates, or penalty terms regarding late/overdue payments." },
+            rawDocumentText: { type: Type.STRING, description: "Full readable document text transcript or summary from the invoice for document comparison." },
             aiReviewNotes: {
               type: Type.ARRAY,
               description: "Audit review notes detailing extraction findings.",

@@ -250,7 +250,7 @@ export default function App() {
 
   // Math validation for selected invoice
   const selectedCalcWarnings = useMemo<CalculationWarning[]>(() => {
-    if (!selectedInvoice || selectedInvoice.status !== 'success') return [];
+    if (!selectedInvoice) return [];
     return validateInvoiceMath(selectedInvoice);
   }, [selectedInvoice]);
 
@@ -262,7 +262,7 @@ export default function App() {
 
   // Missing fields for selected invoice
   const selectedMissingFields = useMemo(() => {
-    if (!selectedInvoice || selectedInvoice.status !== 'success') return [];
+    if (!selectedInvoice) return [];
     return getInvoiceMissingFields(selectedInvoice);
   }, [selectedInvoice]);
 
@@ -356,8 +356,7 @@ export default function App() {
   const duplicatesCount = useMemo(() => {
     return invoices.filter(inv => {
       const dup = duplicateAnalysis[inv.id];
-      const s = getInvoiceValidationSummary(inv, dup);
-      return s.status === 'duplicate';
+      return dup?.isDuplicate && !inv.isDuplicateDismissed;
     }).length;
   }, [invoices, duplicateAnalysis]);
 
@@ -1716,14 +1715,18 @@ export default function App() {
             </div>
 
             <div>
-              <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5">
-                Bank Account Number / IBAN
+              <label className="block text-xs font-bold uppercase text-slate-500 tracking-wider mb-1.5 flex items-center gap-1">
+                Bank Account Number / IBAN *
               </label>
               <input
                 type="text"
                 value={selectedInvoice.bankAccount}
                 onChange={(e) => handleUpdateField('bankAccount', e.target.value)}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 ${
+                  !selectedInvoice.bankAccount || selectedInvoice.bankAccount.trim() === ''
+                    ? 'border-amber-300 bg-amber-50/10 focus:border-amber-500 focus:ring-amber-500'
+                    : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500'
+                }`}
                 placeholder="US89-1020-3040-5060"
               />
             </div>
@@ -2141,28 +2144,46 @@ export default function App() {
             </span>
           )}
 
-          {summary.status === 'needs_review' && (
-            <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3 text-amber-600" />
-              Needs Review
-            </span>
-          )}
-
-          {summary.status === 'duplicate' && (
-            <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3 text-amber-600" />
-              {dupMeta?.matchType === 'historical'
-                ? 'Historical Duplicate'
-                : (dupMeta?.reason?.toLowerCase().includes('file content') || dupMeta?.reason?.toLowerCase().includes('re-upload') || dupMeta?.reason?.toLowerCase().includes('bytes'))
-                  ? 'Exact File Re-upload'
-                  : 'Batch Duplicate'}
-            </span>
-          )}
-
           {summary.status === 'extraction_failed' && (
             <span className="bg-rose-50 text-rose-800 font-bold px-2 py-0.5 rounded-full border border-rose-200">
               Extraction Failed
             </span>
+          )}
+
+          {!summary.isReadyForExport && summary.status !== 'rejected' && summary.status !== 'on_hold' && summary.status !== 'extraction_failed' && inv.status !== 'pending' && (
+            <>
+              {getInvoiceMissingFields(inv).length > 0 && (
+                <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                  Missing Fields ({getInvoiceMissingFields(inv).length})
+                </span>
+              )}
+
+              {dupMeta?.isDuplicate && !inv.isDuplicateDismissed && (
+                <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                  {dupMeta?.matchType === 'historical'
+                    ? 'Historical Duplicate'
+                    : (dupMeta?.reason?.toLowerCase().includes('file content') || dupMeta?.reason?.toLowerCase().includes('re-upload') || dupMeta?.reason?.toLowerCase().includes('bytes'))
+                      ? 'Exact File Re-upload'
+                      : 'Possible Duplicate'}
+                </span>
+              )}
+
+              {validateInvoiceMath(inv).length > 0 && !inv.calcOverrideConfirmed && (
+                <span className="bg-rose-50 text-rose-900 font-bold px-2 py-0.5 rounded-full border border-rose-200 flex items-center gap-1">
+                  <ShieldAlert className="w-3 h-3 text-rose-600" />
+                  Math Mismatch
+                </span>
+              )}
+
+              {getInvoiceMissingFields(inv).length === 0 && (!dupMeta?.isDuplicate || inv.isDuplicateDismissed) && (validateInvoiceMath(inv).length === 0 || inv.calcOverrideConfirmed) && (
+                <span className="bg-amber-50 text-amber-900 font-bold px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                  Needs Review
+                </span>
+              )}
+            </>
           )}
 
           <span className="ml-auto font-mono font-bold text-gray-800 text-xs">
